@@ -1,0 +1,28 @@
+# Junior Coaching bot — Python dependencies
+# Install with:  pip install -r requirements.txt
+
+# OpenAI LLM client
+openai==2.21.0
+
+# HTTP client (used for the OpenAI client / custom timeout)
+httpx==0.28.1
+
+# FAQ retrieval (TF-IDF + cosine similarity)
+scikit-learn==1.4.2
+numpy==1.26.4
+
+# Data handling
+pandas==2.2.2
+
+# Load secrets from .env
+python-dotenv==1.0.1
+
+# Demo UI
+streamlit==1.32.0
+
+streamlit
+openai
+httpx
+python-dotenv
+numpy
+scikit-learn

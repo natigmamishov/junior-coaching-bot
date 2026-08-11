@@ -1,0 +1,11 @@
+.env
+openai_key.txt
+
+*.db
+
+.ipynb_checkpoints/
+
+__pycache__/
+*.pyc
+venv/
+.venv/
