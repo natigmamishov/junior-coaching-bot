@@ -1,15 +1,16 @@
 """
-Junior Coaching — Bot Engine V2
+Junior Coaching — Bot Engine V2.1
 
-Əsas xüsusiyyətlər:
-- OpenAI intent classification
+Əsas funksiyalar:
+- OpenAI intent routing
 - Interruptible conversation flow
 - FAQ retrieval: word + character TF-IDF
-- Azərbaycan dilində yazı normalizasiyası
-- Ad extraction
-- Multiple-child handling
+- Azərbaycan dilində tolerant normalization
+- Ad extraction və honorific cleaning
+- Multiple children handling
 - Meta questions
-- Flexible user questions during form filling
+- FAQ suallarının flow-un istənilən yerində cavablandırılması
+- English general programme question support
 - SQLite leads
 - Conversation logs
 """
@@ -60,7 +61,7 @@ DB_PATH = os.path.join(
 load_dotenv(
     os.path.join(
         BASE_DIR,
-        ".env"
+        ".env",
     )
 )
 
@@ -85,7 +86,7 @@ if _api_key:
 
 
 # =========================================================
-# 2. TEXT NORMALIZATION
+# 2. NORMALIZATION
 # =========================================================
 
 AZ_TRANSLATION = str.maketrans({
@@ -106,13 +107,9 @@ AZ_TRANSLATION = str.maketrans({
 })
 
 
-def normalize_text(
-    text: str,
-) -> str:
+def normalize_text(text: str) -> str:
 
-    text = str(
-        text
-    ).strip().lower()
+    text = str(text).strip().lower()
 
     text = re.sub(
         r"\s+",
@@ -123,17 +120,7 @@ def normalize_text(
     return text
 
 
-def normalize_for_search(
-    text: str,
-) -> str:
-    """
-    FAQ retrieval üçün daha tolerant normalizasiya.
-
-    Məs:
-    qiymət -> qiymet
-    qoşulmaq -> qosulmaq
-    uşağ -> usag
-    """
+def normalize_for_search(text: str) -> str:
 
     text = normalize_text(
         text
@@ -143,6 +130,7 @@ def normalize_for_search(
         AZ_TRANSLATION
     )
 
+    # +, vergül, nöqtə və s. təmizlənir
     text = re.sub(
         r"[^\w\s?]",
         " ",
@@ -159,10 +147,39 @@ def normalize_for_search(
 
 
 # =========================================================
-# 3. BASIC HELPERS
+# 3. LANGUAGE HELPERS
 # =========================================================
 
-def is_greeting(
+def looks_english(text: str) -> bool:
+
+    normalized = normalize_for_search(
+        text
+    )
+
+    english_words = [
+        "could you",
+        "can you",
+        "tell me",
+        "information",
+        "programme",
+        "program",
+        "about",
+        "price",
+        "how much",
+        "age",
+        "child",
+        "teenager",
+    ]
+
+    score = sum(
+        phrase in normalized
+        for phrase in english_words
+    )
+
+    return score >= 2
+
+
+def is_english_program_info_question(
     text: str,
 ) -> bool:
 
@@ -170,16 +187,39 @@ def is_greeting(
         text
     )
 
-    normalized = normalized.strip(
-        "!.,? "
+    if not looks_english(text):
+        return False
+
+    programme_words = [
+        "programme",
+        "program",
+        "junior coaching",
+        "information",
+        "tell me more",
+    ]
+
+    return any(
+        word in normalized
+        for word in programme_words
     )
+
+
+# =========================================================
+# 4. GREETING
+# =========================================================
+
+def is_greeting(text: str) -> bool:
+
+    normalized = normalize_for_search(
+        text
+    ).strip()
 
     greetings = {
         "salam",
         "salamlar",
         "slm",
-        "hi",
         "hello",
+        "hi",
         "hey",
         "salam necesiz",
         "salam necesiniz",
@@ -188,18 +228,28 @@ def is_greeting(
         "aleykum salam",
     }
 
-    # "salam proqramla maraqlaniram" da greeting olsun
-    if normalized.startswith(
-        "salam "
-    ):
-        return True
-
     return normalized in greetings
 
 
-def normalize_phone(
-    text: str,
-):
+def starts_with_greeting(text: str) -> bool:
+
+    normalized = normalize_for_search(
+        text
+    )
+
+    return (
+        normalized == "salam"
+        or normalized.startswith("salam ")
+        or normalized.startswith("hello ")
+        or normalized.startswith("hi ")
+    )
+
+
+# =========================================================
+# 5. PHONE
+# =========================================================
+
+def normalize_phone(text: str):
 
     digits = re.sub(
         r"\D",
@@ -222,6 +272,10 @@ def normalize_phone(
     return None
 
 
+# =========================================================
+# 6. AGE
+# =========================================================
+
 def extract_age_candidates(
     text: str,
 ) -> List[int]:
@@ -235,24 +289,18 @@ def extract_age_candidates(
 
     for number in numbers:
 
-        value = int(
-            number
-        )
+        value = int(number)
 
         if (
             1 <= value <= 99
             and value not in result
         ):
-            result.append(
-                value
-            )
+            result.append(value)
 
     return result
 
 
-def extract_age(
-    text: str,
-):
+def extract_age(text: str):
 
     ages = extract_age_candidates(
         text
@@ -264,11 +312,127 @@ def extract_age(
     return None
 
 
+def detect_embedded_child_age(
+    text: str,
+) -> Optional[int]:
+
+    """
+    Məs:
+    '11 yasli oglum ucun'
+    -> 11
+    """
+
+    normalized = normalize_for_search(
+        text
+    )
+
+    match = re.search(
+        r"\b(\d{1,2})\s*yas",
+        normalized,
+    )
+
+    if match:
+
+        return int(
+            match.group(1)
+        )
+
+    return None
+
+
 # =========================================================
-# 4. NAME EXTRACTION
+# 7. NAME HELPERS
 # =========================================================
 
-def clean_name_candidate(
+HONORIFICS = {
+    "bey",
+    "bəy",
+    "xanim",
+    "xanım",
+    "müəllim",
+    "muellim",
+}
+
+
+def strip_name_statement_suffix(
+    word: str,
+) -> str:
+
+    """
+    Elvindir -> Elvin
+    Orxandir -> Orxan
+    Ismayildir -> Ismayil
+
+    Nadir -> Nadir, çünki 'Na' çox qısadır.
+    """
+
+    if not word:
+        return word
+
+    original = word.strip()
+
+    lower_normalized = normalize_for_search(
+        original
+    )
+
+    suffixes = [
+        "dir",
+        "dur",
+        "dur",
+    ]
+
+    for suffix in suffixes:
+
+        if lower_normalized.endswith(
+            suffix
+        ):
+
+            base_length = (
+                len(original)
+                - len(suffix)
+            )
+
+            # Yanlış şəkildə Nadir -> Na olmasın
+            if base_length >= 4:
+
+                return original[
+                    :base_length
+                ]
+
+    return original
+
+
+def strip_honorifics(
+    text: str,
+) -> str:
+
+    words = text.strip().split()
+
+    cleaned = []
+
+    for word in words:
+
+        normalized = normalize_for_search(
+            word
+        )
+
+        if normalized in {
+            "bey",
+            "xanim",
+            "muellim",
+        }:
+            continue
+
+        cleaned.append(
+            word
+        )
+
+    return " ".join(
+        cleaned
+    ).strip()
+
+
+def clean_extracted_name(
     name: str,
 ) -> Optional[str]:
 
@@ -277,107 +441,87 @@ def clean_name_candidate(
 
     name = name.strip()
 
+    name = strip_honorifics(
+        name
+    )
+
     name = re.sub(
-        r"[.,!?]+$",
+        r"[.,!?+]+",
         "",
         name,
-    )
+    ).strip()
 
-    # Birinci sözü götürürük.
-    # "İsmayıl Məmmədov" kimi hallarda isə tam adı saxlamaq olar.
-    words = name.split()
-
-    stop_words = {
-        "salam",
-        "salamlar",
-        "men",
-        "mən",
-        "adim",
-        "adım",
-        "adi",
-        "adı",
-        "ismim",
-        "mənim",
-        "menim",
-        "usaqin",
-        "uşağın",
-        "ovladimin",
-        "övladımın",
-        "ovladimin",
-        "övladın",
-        "usaq",
-        "uşaq",
-    }
-
-    words = [
-        word
-        for word in words
-        if normalize_for_search(word)
-        not in {
-            normalize_for_search(x)
-            for x in stop_words
-        }
-    ]
-
-    if not words:
+    if not name:
         return None
 
-    candidate = " ".join(
-        words[:2]
-    )
+    words = name.split()
 
-    name_pattern = (
+    cleaned_words = []
+
+    for word in words:
+
+        word = strip_name_statement_suffix(
+            word
+        )
+
+        if word:
+            cleaned_words.append(
+                word
+            )
+
+    if not cleaned_words:
+        return None
+
+    # Ad mərhələsində maksimum 2 söz saxlayaq
+    cleaned_words = cleaned_words[:2]
+
+    result = " ".join(
+        cleaned_words
+    ).strip()
+
+    pattern = (
         r"[A-Za-zƏəÖöÜüĞğÇçŞşİı\- ]+"
     )
 
     if not re.fullmatch(
-        name_pattern,
-        candidate,
+        pattern,
+        result,
     ):
         return None
 
-    return candidate.title()
+    return result.title()
 
 
 def extract_person_name(
     text: str,
 ) -> Optional[str]:
+
     """
-    Məsələn:
+    Examples:
 
-    "salam adim ismayildir"
-    -> Ismayil
-
-    "mənim adım Aygündür"
-    -> Aygün
-
-    "adı eli"
-    -> Eli
+    salam adim ismayildir -> Ismayil
+    mənim adım Aygündür -> Aygün
+    İsmayıl bəy -> İsmayıl
+    elvindir -> Elvin
+    orxandir -> Orxan
+    adi eli -> Eli
     """
 
     original = text.strip()
 
-    normalized = normalize_for_search(
-        original
-    )
+    # ---------------------------------------------
+    # Explicit "adım ..." patterns
+    # ---------------------------------------------
 
     patterns = [
-        r"\bad[iı]m\s+([a-zA-ZƏəÖöÜüĞğÇçŞşİı\-]+)",
-        r"\bismim\s+([a-zA-ZƏəÖöÜüĞğÇçŞşİı\-]+)",
-        r"\bmenim\s+ad[iı]m\s+([a-zA-ZƏəÖöÜüĞğÇçŞşİı\-]+)",
-        r"\badi\s+([a-zA-ZƏəÖöÜüĞğÇçŞşİı\-]+)",
-    ]
-
-    # Orijinal text-də regex
-    raw_patterns = [
         r"(?i)\bad[ıi]m\s+([A-Za-zƏəÖöÜüĞğÇçŞşİı\-]+)",
-        r"(?i)\bismim\s+([A-Za-zƏəÖöÜüĞğÇçŞşİı\-]+)",
         r"(?i)\bmənim\s+ad[ıi]m\s+([A-Za-zƏəÖöÜüĞğÇçŞşİı\-]+)",
         r"(?i)\bmenim\s+ad[ıi]m\s+([A-Za-zƏəÖöÜüĞğÇçŞşİı\-]+)",
+        r"(?i)\bismim\s+([A-Za-zƏəÖöÜüĞğÇçŞşİı\-]+)",
         r"(?i)\bad[ıi]\s+([A-Za-zƏəÖöÜüĞğÇçŞşİı\-]+)",
     ]
 
-    for pattern in raw_patterns:
+    for pattern in patterns:
 
         match = re.search(
             pattern,
@@ -386,62 +530,69 @@ def extract_person_name(
 
         if match:
 
-            candidate = match.group(
-                1
+            return clean_extracted_name(
+                match.group(1)
             )
 
-            # "İsmayıldır" -> "İsmayıl"
-            endings = [
-                "dır",
-                "dir",
-                "dur",
-                "dür",
-                "di",
-                "di̇r",
-                "dir.",
-            ]
+    # ---------------------------------------------
+    # "Salam İsmayıl" tipli hallarda
+    # salam sözünü təmizlə
+    # ---------------------------------------------
 
-            lowered = candidate.lower()
+    normalized = normalize_for_search(
+        original
+    )
 
-            for ending in endings:
-
-                if (
-                    lowered.endswith(ending)
-                    and len(candidate) > len(ending) + 2
-                ):
-
-                    candidate = (
-                        candidate[:-len(ending)]
-                    )
-
-                    break
-
-            return candidate.title()
-
-    # Sadə ad cavabı
-    if (
-        len(original.split()) <= 2
-        and not is_greeting(original)
+    if normalized.startswith(
+        "salam "
     ):
 
-        return clean_name_candidate(
+        without_greeting = re.sub(
+            r"(?i)^salam[,\s]+",
+            "",
+            original,
+        ).strip()
+
+        # "salam adim..." yuxarıdakı pattern-də tutulmalı idi.
+        if (
+            len(without_greeting.split()) <= 2
+            and "adim" not in normalize_for_search(
+                without_greeting
+            )
+        ):
+
+            return clean_extracted_name(
+                without_greeting
+            )
+
+    # ---------------------------------------------
+    # Sadə cavab
+    # ---------------------------------------------
+
+    if len(
+        original.split()
+    ) <= 3:
+
+        candidate = strip_honorifics(
             original
+        )
+
+        return clean_extracted_name(
+            candidate
         )
 
     return None
 
 
 # =========================================================
-# 5. AZERBAIJANI NAME SUFFIXES
+# 8. AZERBAIJANI NAME SUFFIXES
 # =========================================================
 
 def get_last_vowel(
     word: str,
 ) -> Optional[str]:
 
-    vowels = (
-        "aıoueəiöü"
-    )
+    vowels = "aıoueəiöü"
 
     for char in reversed(
         word.lower()
@@ -521,9 +672,7 @@ def child_genitive(
         name
     )
 
-    vowels = (
-        "aıoueəiöü"
-    )
+    vowels = "aıoueəiöü"
 
     if name[-1].lower() in vowels:
 
@@ -552,9 +701,7 @@ def child_dative(
         name
     )
 
-    vowels = (
-        "aıoueəiöü"
-    )
+    vowels = "aıoueəiöü"
 
     if name[-1].lower() in vowels:
 
@@ -571,7 +718,7 @@ def child_dative(
 
 
 # =========================================================
-# 6. STRONG INTERRUPT DETECTORS
+# 9. SPECIAL ROUTING DETECTORS
 # =========================================================
 
 def is_bot_meta_question(
@@ -584,13 +731,12 @@ def is_bot_meta_question(
 
     patterns = [
         "siz botsuz",
+        "siz botsunuz",
         "sen botsan",
-        "siz botsan",
-        "bot musunuz",
         "botmusuz",
-        "kimle danisiram",
+        "bot musunuz",
         "men kimle danisiram",
-        "kiminle danisiram",
+        "kimle danisiram",
         "siz kimsiniz",
         "sen kimsen",
         "kim cavab verir",
@@ -612,31 +758,32 @@ def is_child_presence_question(
         text
     )
 
-    child_words = [
+    child_terms = [
         "usaq",
         "ovlad",
-        "qizim",
         "oglum",
+        "qizim",
+        "yeniyetme",
     ]
 
-    presence_words = [
+    presence_terms = [
         "yanimda",
         "yaninda",
         "olmalidir",
-        "olmasi vacib",
         "olmalidi",
+        "olmasi vacib",
         "gelmelidir",
         "gelmelidi",
     ]
 
     return (
         any(
-            word in normalized
-            for word in child_words
+            term in normalized
+            for term in child_terms
         )
         and any(
-            word in normalized
-            for word in presence_words
+            term in normalized
+            for term in presence_terms
         )
     )
 
@@ -654,10 +801,14 @@ def is_multiple_children_message(
         "2 usaq",
         "iki ovlad",
         "2 ovlad",
+        "iki usağim",
+        "2 usagim",
         "mende iki usaq",
-        "bizde iki usaq",
         "mende 2 usaq",
+        "bizde iki usaq",
         "bizde 2 usaq",
+        "iki usaqdir",
+        "2 usaqdir",
     ]
 
     return any(
@@ -680,10 +831,8 @@ def is_pause_or_goodbye(
         "sonra yazaram",
         "sonra yazariq",
         "indi uygun deyil",
-        "indi uygun deyiləm",
-        "sag olun",
-        "sagolun",
-        "tesekkur sonra",
+        "sag olun sonra",
+        "sagolun sonra",
         "helelik",
     ]
 
@@ -705,8 +854,8 @@ def is_not_available_today(
         "bugun danisa bilmeyeceyem",
         "bugun danisa bilmerem",
         "bu gun danisa bilmeyeceyem",
-        "bu gun uygun deyil",
         "bugun uygun deyil",
+        "bu gun uygun deyil",
         "bugun vaxtim yoxdur",
         "bu gun vaxtim yoxdur",
     ]
@@ -714,6 +863,44 @@ def is_not_available_today(
     return any(
         pattern in normalized
         for pattern in patterns
+    )
+
+
+def is_contact_here_question(
+    text: str,
+) -> bool:
+
+    normalized = normalize_for_search(
+        text
+    )
+
+    here_terms = [
+        "burdan",
+        "buradan",
+        "burda",
+        "burada",
+        "chatdan",
+        "burdan elaqe",
+        "buradan elaqe",
+    ]
+
+    contact_terms = [
+        "elaqe",
+        "danismaq",
+        "yazismaq",
+        "mumkundur",
+        "olar",
+    ]
+
+    return (
+        any(
+            term in normalized
+            for term in here_terms
+        )
+        and any(
+            term in normalized
+            for term in contact_terms
+        )
     )
 
 
@@ -725,43 +912,70 @@ def is_call_timing_question(
         text
     )
 
-    timing_words = [
+    time_terms = [
         "sabah",
         "bugun",
         "bu gun",
-        "hefteson",
-        "seher",
         "axsam",
+        "axsam saatlari",
+        "seher",
+        "gunorta",
         "nahardan sonra",
+        "heftesonu",
     ]
 
-    call_words = [
-        "elaqe",
+    contact_terms = [
         "zeng",
+        "elaqe",
         "danismaq",
         "danisa",
+        "alinar",
         "mumkundur",
         "olar",
     ]
 
     return (
-        "?" in text
-        or "mumkundur" in normalized
-        or "olar" in normalized
-    ) and (
         any(
-            word in normalized
-            for word in timing_words
+            term in normalized
+            for term in time_terms
         )
         and any(
-            word in normalized
-            for word in call_words
+            term in normalized
+            for term in contact_terms
         )
     )
 
 
+def is_general_program_interest(
+    text: str,
+) -> bool:
+
+    normalized = normalize_for_search(
+        text
+    )
+
+    patterns = [
+        "proqramla maraqlaniram",
+        "proqramlarla maraqlaniram",
+        "proqramla maraqlanirdim",
+        "junior coaching proqramiyla maraqlaniram",
+        "junior coaching proqrami ile maraqlaniram",
+        "sizin proqramla maraqlaniram",
+        "sizin proqramla maraqlanirdim",
+        "esas sizin proqramla maraqlanirdim",
+        "proqram haqqinda melumat",
+        "proqram barede melumat",
+        "proqrami oyrenmek isteyirem",
+    ]
+
+    return any(
+        pattern in normalized
+        for pattern in patterns
+    )
+
+
 # =========================================================
-# 7. FAQ DATASET
+# 10. FAQ INDEX
 # =========================================================
 
 def _build_faq_index():
@@ -769,6 +983,7 @@ def _build_faq_index():
     if not os.path.exists(
         DATASET_PATH
     ):
+
         raise FileNotFoundError(
             f"FAQ faylı tapılmadı: {DATASET_PATH}"
         )
@@ -824,23 +1039,20 @@ def _build_faq_index():
         )
 
     questions = [
-        question
-        for question, _ in pairs
+        q
+        for q, _ in pairs
     ]
 
     answers = [
-        answer
-        for _, answer in pairs
+        a
+        for _, a in pairs
     ]
 
     normalized_questions = [
-        normalize_for_search(
-            question
-        )
-        for question in questions
+        normalize_for_search(q)
+        for q in questions
     ]
 
-    # Word + character TF-IDF
     vectorizer = FeatureUnion([
         (
             "word",
@@ -849,7 +1061,7 @@ def _build_faq_index():
                 ngram_range=(1, 2),
                 max_features=50000,
                 sublinear_tf=True,
-            )
+            ),
         ),
         (
             "char",
@@ -858,7 +1070,7 @@ def _build_faq_index():
                 ngram_range=(3, 5),
                 max_features=70000,
                 sublinear_tf=True,
-            )
+            ),
         ),
     ])
 
@@ -869,27 +1081,19 @@ def _build_faq_index():
     return (
         questions,
         answers,
-        normalized_questions,
         vectorizer,
         matrix,
     )
 
 
-(
-    questions,
-    answers,
-    normalized_questions,
-    vectorizer,
-    Q,
-) = _build_faq_index()
+questions, answers, vectorizer, Q = (
+    _build_faq_index()
+)
 
 
 def expand_faq_query(
     text: str,
 ) -> str:
-    """
-    FAQ query-yə yaxın sinonim sözlər əlavə edir.
-    """
 
     normalized = normalize_for_search(
         text
@@ -898,15 +1102,15 @@ def expand_faq_query(
     additions = []
 
     if any(
-        word in normalized
-        for word in [
+        x in normalized
+        for x in [
             "qiymet",
-            "ne qederdir",
             "odenis",
+            "ne qeder",
             "pul",
-            "cost",
         ]
     ):
+
         additions.extend([
             "qiymet",
             "odenis",
@@ -914,48 +1118,48 @@ def expand_faq_query(
         ])
 
     if any(
-        word in normalized
-        for word in [
+        x in normalized
+        for x in [
             "yasdan",
             "yas qrupu",
             "nece yas",
             "qosulmaq",
-            "qebul",
         ]
     ):
+
         additions.extend([
             "yas qrupu",
             "12 18",
-            "nece yas",
+            "proqrama nece yasdan",
         ])
 
     if any(
-        word in normalized
-        for word in [
+        x in normalized
+        for x in [
             "ne zaman baslayir",
             "ne vaxt baslayir",
-            "baslama",
-            "start",
+            "baslama tarixi",
         ]
     ):
+
         additions.extend([
             "proqram ne vaxt baslayir",
             "baslama tarixi",
         ])
 
     if any(
-        word in normalized
-        for word in [
+        x in normalized
+        for x in [
             "endirim",
             "iki usaq",
             "2 usaq",
-            "iki ovlad",
         ]
     ):
+
         additions.extend([
             "endirim",
-            "iki usaq",
             "kampaniya",
+            "iki usaq",
         ])
 
     if additions:
@@ -963,9 +1167,7 @@ def expand_faq_query(
         return (
             normalized
             + " "
-            + " ".join(
-                additions
-            )
+            + " ".join(additions)
         )
 
     return normalized
@@ -974,7 +1176,7 @@ def expand_faq_query(
 def retrieve_similar(
     user_query: str,
     k: int = 4,
-    min_score: float = 0.16,
+    min_score: float = 0.15,
 ) -> List[Tuple[str, str, float]]:
 
     query = expand_faq_query(
@@ -1015,7 +1217,7 @@ def retrieve_similar(
     return results
 
 
-def get_best_faq_hit(
+def answer_faq_question(
     user_text: str,
     min_score: float = 0.20,
 ):
@@ -1026,33 +1228,20 @@ def get_best_faq_hit(
         min_score=min_score,
     )
 
-    return hits[0] if hits else None
-
-
-def answer_faq_question(
-    user_text: str,
-    min_score: float = 0.20,
-):
-
-    hit = get_best_faq_hit(
-        user_text=user_text,
-        min_score=min_score,
-    )
-
-    if hit is None:
+    if not hits:
         return None
 
-    faq_question, faq_answer, score = hit
+    question, answer, score = hits[0]
 
     return {
-        "question": faq_question,
-        "answer": faq_answer,
+        "question": question,
+        "answer": answer,
         "score": score,
     }
 
 
 # =========================================================
-# 8. FAQ / QUESTION DETECTION
+# 11. QUESTION DETECTION
 # =========================================================
 
 def looks_like_question(
@@ -1072,12 +1261,11 @@ def looks_like_question(
         "kim",
         "hansi",
         "mumkundur",
+        "olarmi",
         "olar",
         "varmi",
-        "var",
-        "isteyirem",
         "oyrenmek isteyirem",
-        "melumat",
+        "melumat isteyirem",
     ]
 
     return (
@@ -1097,7 +1285,7 @@ def is_probable_faq_question(
         text
     )
 
-    faq_topics = [
+    topics = [
         "proqram",
         "qiymet",
         "odenis",
@@ -1105,39 +1293,32 @@ def is_probable_faq_question(
         "yas",
         "qosul",
         "baslay",
-        "ne zaman",
-        "ne vaxt",
         "gorus",
         "qrup",
         "ferdi",
-        "online",
         "onlayn",
+        "online",
         "mekan",
-        "harada",
         "telimci",
-        "ismayil",
         "sertifikat",
         "sinaq",
         "kampaniya",
         "psixoloq",
-        "valideyn",
         "tanisliq",
         "zeng",
     ]
 
     return (
-        looks_like_question(
-            text
-        )
+        looks_like_question(text)
         and any(
             topic in normalized
-            for topic in faq_topics
+            for topic in topics
         )
     )
 
 
 # =========================================================
-# 9. LLM CLASSIFIER
+# 12. LLM ROUTER
 # =========================================================
 
 def classify_message_with_llm(
@@ -1153,74 +1334,78 @@ def classify_message_with_llm(
         )
 
     system_message = """
-Sən Junior Coaching üçün mesaj router modulusan.
+Sən Junior Coaching mesaj router-isən.
 
 Intent-lər:
 
-1. greeting
-2. faq_question
-3. field_answer
-4. registration_request
-5. human_agent_request
-6. complaint
-7. safety_risk
-8. meta_question
-9. pause_request
-10. unrelated
+greeting
+faq_question
+field_answer
+registration_request
+human_agent_request
+complaint
+safety_risk
+meta_question
+pause_request
+unrelated
 
-ÇOX VACİB QAYDA:
+ƏSAS QAYDA:
 
-İstifadəçi hansı field mərhələsində olursa olsun,
-əgər ayrıca sual verirsə həmin mesajı field_answer kimi məcbur etmə.
+current_field istifadəçini məcbur etmir.
+
+İstifadəçi formanın istənilən mərhələsində proqram haqqında
+sual verə bilər.
 
 Məsələn:
 
-current_field=phone
-"user: uşaq yanımda olmalıdır?"
+current_field=parent_name
+"junior coaching proqramıyla maraqlanıram"
+=> faq_question
+
+current_field=parent_name
+"11 yaşlı oğlum üçün proqramla maraqlanıram"
+=> faq_question
+
+current_field=main_concern
+"mən əsas sizin proqramla maraqlanırdım"
 => faq_question
 
 current_field=phone
-"user: sabah əlaqə saxlamaq mümkündür?"
+"uşaq yanımda olmalıdır?"
 => faq_question
 
 current_field=phone
-"user: siz botsuz?"
+"axşam saatları zəng etmək alınar?"
+=> faq_question
+
+current_field=phone
+"0555555555"
+=> field_answer
+
+current_field=child_name
+"2 uşaqdır məndə"
+=> field_answer
+
+current_field=parent_name
+"İsmayıl bəy"
+=> field_answer
+
+current_field=parent_name
+"Salam adım İsmayıldır"
+=> field_answer
+
+current_field=child_age
+"12 tamam olacaq"
+=> field_answer
+
+Meta:
+"siz botsuz?"
+"kimlə danışıram?"
 => meta_question
 
-current_field=phone
-"user: sonra əlaqə saxlayarıq sağ olun"
+Pause:
+"sonra əlaqə saxlayarıq sağ olun"
 => pause_request
-
-current_field=phone
-"user: 0501234567"
-=> field_answer
-
-current_field=child_age
-"user: 14"
-=> field_answer
-
-current_field=child_age
-"user: məndə iki uşaq var"
-=> field_answer
-
-current_field=main_concern
-"user: dərsləri zəifdir"
-=> field_answer
-
-current_field=main_concern
-"user: qiyməti nə qədərdir?"
-=> faq_question
-
-Meta suallar:
-- siz botsuz?
-- kimlə danışıram?
-- siz kimsiniz?
-
-pause_request:
-- sonra əlaqə saxlayarıq
-- sonra yazaram
-- indi uyğun deyil
-- sağ olun, sonra danışarıq
 
 Yalnız JSON qaytar.
 """
@@ -1296,7 +1481,10 @@ def safe_classify_message(
     current_field: Optional[str],
 ) -> dict:
 
-    # Əvvəl deterministik güclü qaydalar
+    # ---------------------------------------------
+    # Explicit deterministic routes first
+    # ---------------------------------------------
+
     if is_bot_meta_question(
         user_text
     ):
@@ -1326,6 +1514,15 @@ def safe_classify_message(
         or is_call_timing_question(
             user_text
         )
+        or is_contact_here_question(
+            user_text
+        )
+        or is_general_program_interest(
+            user_text
+        )
+        or is_english_program_info_question(
+            user_text
+        )
         or is_probable_faq_question(
             user_text
         )
@@ -1335,7 +1532,7 @@ def safe_classify_message(
             "intent": "faq_question",
             "is_question": True,
             "should_escalate": False,
-            "confidence": 0.99,
+            "confidence": 1.0,
         }
 
     try:
@@ -1348,7 +1545,7 @@ def safe_classify_message(
     except Exception as exc:
 
         print(
-            "LLM CLASSIFIER ERROR:",
+            "LLM ROUTER ERROR:",
             exc,
         )
 
@@ -1358,28 +1555,20 @@ def safe_classify_message(
 
             intent = "greeting"
 
-        elif is_probable_faq_question(
-            user_text
-        ):
-
-            intent = "faq_question"
-
         else:
 
             intent = "field_answer"
 
         return {
             "intent": intent,
-            "is_question": (
-                intent == "faq_question"
-            ),
+            "is_question": False,
             "should_escalate": False,
             "confidence": 0.0,
         }
 
 
 # =========================================================
-# 10. PARENT TITLE
+# 13. PARENT TITLE
 # =========================================================
 
 def infer_parent_title_with_llm(
@@ -1400,15 +1589,11 @@ def infer_parent_title_with_llm(
             messages=[
                 {
                     "role": "system",
-                    "content": """
-Azərbaycan adına əsasən müraciət formasını seç:
-
-xanım
-bəy
-neutral
-
-Əmin deyilsənsə neutral seç.
-"""
+                    "content": (
+                        "Azərbaycan adına əsasən müraciət "
+                        "formasını seç: xanım, bəy və ya neutral. "
+                        "Əmin deyilsənsə neutral seç."
+                    ),
                 },
                 {
                     "role": "user",
@@ -1469,7 +1654,7 @@ neutral
 
 
 # =========================================================
-# 11. LEAD STRUCTURE
+# 14. LEAD
 # =========================================================
 
 def create_empty_lead(
@@ -1519,9 +1704,7 @@ FIELD_QUESTIONS = {
         ),
 
     "concern_duration":
-        (
-            "Bu hal nə qədər müddətdir davam edir?"
-        ),
+        "Bu hal nə qədər müddətdir davam edir?",
 
     "concern_onset":
         (
@@ -1568,7 +1751,7 @@ def get_parent_display_name(
 
 
 # =========================================================
-# 12. PERSONALIZED QUESTIONS
+# 15. PERSONALIZED QUESTIONS
 # =========================================================
 
 def get_personalized_question(
@@ -1586,13 +1769,11 @@ def get_personalized_question(
         "child_name"
     )
 
-
     if field == "parent_name":
 
         return (
             "Sizə necə müraciət edə bilərəm?"
         )
-
 
     if field == "child_name":
 
@@ -1607,7 +1788,6 @@ def get_personalized_question(
             "Övladınızın adını öyrənə bilərəm?"
         )
 
-
     if field == "child_age":
 
         if child_name:
@@ -1621,7 +1801,6 @@ def get_personalized_question(
             "Övladınızın neçə yaşı var?"
         )
 
-
     if field == "main_concern":
 
         if child_name:
@@ -1632,12 +1811,9 @@ def get_personalized_question(
                 "ən çox narahat edən məsələ nədir?"
             )
 
-        return (
-            FIELD_QUESTIONS[
-                "main_concern"
-            ]
-        )
-
+        return FIELD_QUESTIONS[
+            "main_concern"
+        ]
 
     if field == "concern_duration":
 
@@ -1646,7 +1822,6 @@ def get_personalized_question(
             "Bu hal nə qədər müddətdir davam edir?"
         )
 
-
     if field == "concern_onset":
 
         return (
@@ -1654,7 +1829,6 @@ def get_personalized_question(
             "Sizcə hansısa hadisədən sonra belə olub, "
             "yoxsa tədricən?"
         )
-
 
     if field == "phone":
 
@@ -1668,12 +1842,9 @@ def get_personalized_question(
                 "telefon nömrənizi qeyd edin, zəhmət olmasa."
             )
 
-        return (
-            FIELD_QUESTIONS[
-                "phone"
-            ]
-        )
-
+        return FIELD_QUESTIONS[
+            "phone"
+        ]
 
     if field == "preferred_call_time":
 
@@ -1683,7 +1854,6 @@ def get_personalized_question(
             "daha uyğun olar?"
         )
 
-
     return FIELD_QUESTIONS.get(
         field,
         "",
@@ -1691,7 +1861,7 @@ def get_personalized_question(
 
 
 # =========================================================
-# 13. NEXT FIELD
+# 16. NEXT FIELD
 # =========================================================
 
 def get_next_missing_field(
@@ -1710,9 +1880,7 @@ def get_next_missing_field(
         if not lead.get(
             field
         ):
-
             return field
-
 
     if lead.get(
         "needs_concern_followup",
@@ -1722,38 +1890,28 @@ def get_next_missing_field(
         if not lead.get(
             "concern_duration"
         ):
-
-            return (
-                "concern_duration"
-            )
+            return "concern_duration"
 
         if not lead.get(
             "concern_onset"
         ):
+            return "concern_onset"
 
-            return (
-                "concern_onset"
-            )
-
-
-    final_fields = [
+    for field in [
         "phone",
         "preferred_call_time",
-    ]
-
-    for field in final_fields:
+    ]:
 
         if not lead.get(
             field
         ):
-
             return field
 
     return None
 
 
 # =========================================================
-# 14. FIELD VALIDATION
+# 17. FIELD VALIDATION
 # =========================================================
 
 def save_user_answer(
@@ -1775,10 +1933,9 @@ def save_user_answer(
         user_text
     )
 
-
-    # =====================================================
+    # ---------------------------------------------
     # PARENT NAME
-    # =====================================================
+    # ---------------------------------------------
 
     if field == "parent_name":
 
@@ -1805,17 +1962,25 @@ def save_user_answer(
             name
         )
 
-        return (
-            True,
-            None
-        )
+        return True, None
 
-
-    # =====================================================
+    # ---------------------------------------------
     # CHILD NAME
-    # =====================================================
+    # ---------------------------------------------
 
     if field == "child_name":
+
+        if is_multiple_children_message(
+            user_text
+        ):
+
+            return (
+                False,
+                "Başa düşürəm 😊 İki övladınız üçün də "
+                "məlumat ala bilərik. Hələlik birinci "
+                "övladınızdan başlayaq. "
+                "Onun adını qeyd edə bilərsiniz?"
+            )
 
         name = extract_person_name(
             user_text
@@ -1826,22 +1991,18 @@ def save_user_answer(
             return (
                 False,
                 "Övladınızın adını tam anlaya bilmədim. "
-                "Məsələn: Leyla və ya \"adı Eli\"."
+                "Məsələn: Leyla, Orxan və ya \"adı Eli\"."
             )
 
         lead[
             "child_name"
         ] = name
 
-        return (
-            True,
-            None
-        )
+        return True, None
 
-
-    # =====================================================
-    # CHILD AGE
-    # =====================================================
+    # ---------------------------------------------
+    # AGE
+    # ---------------------------------------------
 
     if field == "child_age":
 
@@ -1853,24 +2014,14 @@ def save_user_answer(
                 "child_name"
             )
 
-            if child_name:
-
-                return (
-                    False,
-                    "Başa düşürəm, iki övladınız var. "
-                    "Hazırda müraciəti bir övlad üzrə "
-                    "davam etdiririk. "
-                    f"Əvvəlcə {child_genitive(child_name)} "
-                    "yaşını qeyd edə bilərsiniz?"
-                )
-
             return (
                 False,
                 "Başa düşürəm, iki övladınız var. "
-                "Əvvəlcə müraciəti bir övlad üzrə davam etdirək. "
-                "Hazırda qeyd etdiyiniz övladın yaşını yaza bilərsiniz?"
+                "Hazırda müraciəti bir övlad üzrə "
+                "davam etdiririk. "
+                f"Əvvəlcə {child_genitive(child_name)} "
+                "yaşını qeyd edə bilərsiniz?"
             )
-
 
         ages = extract_age_candidates(
             user_text
@@ -1882,23 +2033,12 @@ def save_user_answer(
                 "child_name"
             )
 
-            if child_name:
-
-                return (
-                    False,
-                    f"İki yaş qeyd etdiniz: "
-                    f"{', '.join(map(str, ages))}. "
-                    f"{child_genitive(child_name)} "
-                    "yaşı hansıdır?"
-                )
-
             return (
                 False,
-                "Bir neçə yaş qeyd etdiniz. "
-                "Hazırda müraciət etdiyiniz övladın "
-                "yaşını tək rəqəmlə qeyd edin."
+                f"Bir neçə yaş qeyd etdiniz: "
+                f"{', '.join(map(str, ages))}. "
+                f"{child_genitive(child_name)} yaşı hansıdır?"
             )
-
 
         age = extract_age(
             user_text
@@ -1912,7 +2052,6 @@ def save_user_answer(
                 "rəqəmlə qeyd edin. Məsələn: 14."
             )
 
-
         if not (
             12 <= age <= 18
         ):
@@ -1925,60 +2064,41 @@ def save_user_answer(
                 "dəqiqləşdirə bilərsiniz?"
             )
 
-
         lead[
             "child_age"
         ] = age
 
-        return (
-            True,
-            None
-        )
+        return True, None
 
-
-    # =====================================================
+    # ---------------------------------------------
     # MAIN CONCERN
-    # =====================================================
+    # ---------------------------------------------
 
     if field == "main_concern":
 
         followup_answers = {
-
             "fikirli",
             "fikirlidir",
             "fikirli olur",
             "fikirli gezir",
             "fikirli gorunur",
-
             "cox fikirlidir",
-
             "ozune qapanir",
             "ozune qapanib",
-
             "qapalidir",
-
             "cox sakitdir",
-
             "danismir",
         }
 
-
         vague_answers = {
-
             "problemi var",
             "problem var",
-
             "cetinlik cekir",
-
             "yaxsi deyil",
-
             "narahatdir",
-
             "bilmirem",
-
             "hec ne",
         }
-
 
         if normalized in followup_answers:
 
@@ -1998,11 +2118,7 @@ def save_user_answer(
                 "concern_onset"
             ] = None
 
-            return (
-                True,
-                None
-            )
-
+            return True, None
 
         if normalized in vague_answers:
 
@@ -2013,17 +2129,6 @@ def save_user_answer(
                 "əsas məsələni qısa şəkildə qeyd edin."
             )
 
-
-        if len(
-            user_text
-        ) < 2:
-
-            return (
-                False,
-                "Bir qədər dəqiqləşdirə bilərsiniz?"
-            )
-
-
         lead[
             "main_concern"
         ] = user_text
@@ -2032,19 +2137,15 @@ def save_user_answer(
             "needs_concern_followup"
         ] = False
 
-        return (
-            True,
-            None
-        )
+        return True, None
 
-
-    # =====================================================
+    # ---------------------------------------------
     # DURATION
-    # =====================================================
+    # ---------------------------------------------
 
     if field == "concern_duration":
 
-        duration_keywords = [
+        duration_terms = [
             "gun",
             "hefte",
             "ay",
@@ -2055,89 +2156,44 @@ def save_user_answer(
             "usaqliqdan",
         ]
 
-        has_keyword = any(
-            keyword in normalized
-            for keyword in duration_keywords
-        )
-
-        has_number = bool(
-            re.search(
+        if not (
+            any(
+                term in normalized
+                for term in duration_terms
+            )
+            or re.search(
                 r"\d+",
                 normalized,
             )
-        )
-
-        if (
-            not has_keyword
-            and not has_number
         ):
 
             return (
                 False,
                 "Təxmini müddəti qeyd edə bilərsiniz? "
-                "Məsələn: 2 həftədir, 3 aydır."
+                "Məsələn: 2 həftədir və ya 3 aydır."
             )
 
         lead[
             "concern_duration"
         ] = user_text
 
-        return (
-            True,
-            None
-        )
+        return True, None
 
-
-    # =====================================================
+    # ---------------------------------------------
     # ONSET
-    # =====================================================
+    # ---------------------------------------------
 
     if field == "concern_onset":
-
-        unknown = [
-            "bilmirem",
-            "xeberim yoxdur",
-            "bilinmir",
-        ]
-
-        if any(
-            phrase == normalized
-            for phrase in unknown
-        ):
-
-            lead[
-                "concern_onset"
-            ] = user_text
-
-            return (
-                True,
-                None
-            )
-
-
-        if len(
-            user_text.split()
-        ) < 1:
-
-            return (
-                False,
-                "Bir qədər dəqiqləşdirə bilərsiniz?"
-            )
-
 
         lead[
             "concern_onset"
         ] = user_text
 
-        return (
-            True,
-            None
-        )
+        return True, None
 
-
-    # =====================================================
+    # ---------------------------------------------
     # PHONE
-    # =====================================================
+    # ---------------------------------------------
 
     if field == "phone":
 
@@ -2157,17 +2213,31 @@ def save_user_answer(
             "phone"
         ] = phone
 
-        return (
-            True,
-            None
-        )
+        return True, None
 
-
-    # =====================================================
+    # ---------------------------------------------
     # CALL TIME
-    # =====================================================
+    # ---------------------------------------------
 
     if field == "preferred_call_time":
+
+        # "sabah" təkbaşına kifayət deyil
+        vague_day_only = {
+            "sabah",
+            "bugun",
+            "bu gun",
+            "heftesonu",
+            "bazar",
+        }
+
+        if normalized in vague_day_only:
+
+            return (
+                False,
+                f"Əlbəttə. {user_text.capitalize()} sizə "
+                "hansı saat aralığı daha uyğun olar? "
+                "Məsələn: 14:00–16:00."
+            )
 
         vague = {
             "ferqi yoxdur",
@@ -2181,14 +2251,14 @@ def save_user_answer(
 
             return (
                 False,
-                "Zəhmət olmasa uyğun gün və vaxtı "
+                "Zəhmət olmasa uyğun gün və saat aralığını "
                 "bir qədər dəqiqləşdirin. "
-                "Məsələn: sabah 14:00–15:00."
+                "Məsələn: sabah 14:00–16:00."
             )
 
-
-        time_keywords = [
+        time_terms = [
             "bugun",
+            "bu gun",
             "sabah",
             "birisi gun",
             "bazar ertesi",
@@ -2204,12 +2274,10 @@ def save_user_answer(
             "axsam",
         ]
 
-
-        has_keyword = any(
-            keyword in normalized
-            for keyword in time_keywords
+        has_daypart = any(
+            term in normalized
+            for term in time_terms
         )
-
 
         has_numeric_time = bool(
             re.search(
@@ -2221,52 +2289,40 @@ def save_user_answer(
             )
         )
 
-
-        if (
-            not has_keyword
-            and not has_numeric_time
+        if not (
+            has_daypart
+            or has_numeric_time
         ):
 
             return (
                 False,
-                "Zəhmət olmasa uyğun gün və saatı qeyd edin. "
-                "Məsələn: sabah 14:00–15:00."
+                "Zəhmət olmasa uyğun gün və saat aralığını "
+                "qeyd edin. Məsələn: sabah 14:00–16:00."
             )
-
 
         lead[
             "preferred_call_time"
         ] = user_text
 
-        return (
-            True,
-            None
-        )
-
+        return True, None
 
     return (
         False,
-        f"'{field}' üçün validation yoxdur."
+        f"'{field}' üçün validation müəyyən edilməyib."
     )
 
 
 # =========================================================
-# 15. INTERRUPT RESPONSES
+# 18. SPECIAL RESPONSES
 # =========================================================
 
-def answer_meta_question(
+def append_current_question(
+    response: str,
     lead: dict,
 ) -> str:
 
     current_field = get_next_missing_field(
         lead
-    )
-
-    response = (
-        "Mən Junior Coaching proqramı üzrə "
-        "virtual müraciət köməkçisiyəm 😊 "
-        "Proqram haqqında suallarınızı cavablandıra "
-        "və müraciətinizi qeydə ala bilirəm."
     )
 
     if current_field:
@@ -2282,13 +2338,24 @@ def answer_meta_question(
     return response
 
 
-def answer_child_presence(
+def answer_meta_question(
     lead: dict,
 ) -> str:
 
-    current_field = get_next_missing_field(
-        lead
+    return append_current_question(
+        (
+            "Mən Junior Coaching proqramı üzrə "
+            "virtual müraciət köməkçisiyəm 😊 "
+            "Proqram haqqında suallarınızı cavablandıra "
+            "və müraciətinizi qeydə ala bilirəm."
+        ),
+        lead,
     )
+
+
+def answer_child_presence(
+    lead: dict,
+) -> str:
 
     child_name = lead.get(
         "child_name"
@@ -2297,38 +2364,44 @@ def answer_child_presence(
     if child_name:
 
         response = (
-            "İlkin zəng zamanı "
-            f"{child_genitive(child_name)} "
+            f"İlkin zəng zamanı {child_genitive(child_name)} "
             "yanınızda olması vacib deyil. "
-            "Daha sonra ehtiyac olarsa övladınızla "
-            "ayrıca təxminən 5 dəqiqəlik video "
-            "tanışlıq görüşü keçirilə bilər."
+            "Daha sonra proqramdan əvvəl övladınızla "
+            "təxminən 5 dəqiqəlik video tanışlıq "
+            "görüşü keçirilə bilər."
         )
 
     else:
 
         response = (
-            "İlkin zəng zamanı övladınızın "
-            "yanınızda olması vacib deyil. "
-            "Daha sonra ehtiyac olarsa övladınızla "
-            "ayrıca təxminən 5 dəqiqəlik video "
-            "tanışlıq görüşü keçirilə bilər."
+            "İlkin zəng zamanı övladınızın yanınızda "
+            "olması vacib deyil. Daha sonra proqramdan "
+            "əvvəl övladınızla təxminən 5 dəqiqəlik "
+            "video tanışlıq görüşü keçirilə bilər."
         )
 
-    if current_field:
-
-        response += (
-            "\n\n"
-            + get_personalized_question(
-                current_field,
-                lead,
-            )
-        )
-
-    return response
+    return append_current_question(
+        response,
+        lead,
+    )
 
 
-def answer_call_timing_question(
+def answer_contact_here(
+    lead: dict,
+) -> str:
+
+    return append_current_question(
+        (
+            "Bəli 😊 Buradan müraciətinizi qeyd edə bilərsiniz. "
+            "Əlaqə nömrənizi və sizə uyğun zəng vaxtını "
+            "qeyd etdikdən sonra Junior Coaching komandası "
+            "sizinlə əlaqə saxlayacaq."
+        ),
+        lead,
+    )
+
+
+def answer_call_timing(
     lead: dict,
 ) -> str:
 
@@ -2337,16 +2410,15 @@ def answer_call_timing_question(
     )
 
     response = (
-        "Bəli, mümkündür 😊 "
-        "Sizə uyğun gün və saat nəzərə alınaraq "
-        "əlaqə saxlanıla bilər."
+        "Bəli, mümkündür 😊 Sizə uyğun gün və saat "
+        "aralığı nəzərə alınaraq əlaqə saxlanıla bilər."
     )
 
     if current_field == "phone":
 
         response += (
             "\n\nƏvvəlcə sizinlə əlaqə saxlaya bilməyimiz "
-            "üçün telefon nömrənizi qeyd edin, zəhmət olmasa."
+            "üçün telefon nömrənizi qeyd edə bilərsiniz?"
         )
 
     elif current_field:
@@ -2371,9 +2443,8 @@ def answer_not_available_today(
     )
 
     response = (
-        "Əlbəttə, problem deyil 😊 "
-        "Sizə uyğun başqa gün və saat üçün "
-        "əlaqə yaradıla bilər."
+        "Əlbəttə, problem deyil 😊 Sizə uyğun başqa gün "
+        "və saat üçün əlaqə yaradıla bilər."
     )
 
     if current_field == "phone":
@@ -2396,8 +2467,97 @@ def answer_not_available_today(
     return response
 
 
+def answer_general_program_interest(
+    lead: dict,
+) -> str:
+
+    response = (
+        "Əlbəttə 😊 Junior Coaching 12–18 yaşlı "
+        "yeniyetmələrin şəxsi və sosial inkişafına "
+        "dəstək verən proqramdır. Yeniyetmələr proqram "
+        "çərçivəsində özlərini daha yaxşı tanımaq, "
+        "fikirlərini ifadə etmək, qərarvermə, məsuliyyət "
+        "və sağlam ünsiyyət kimi bacarıqlar üzərində işləyirlər."
+    )
+
+    return append_current_question(
+        response,
+        lead,
+    )
+
+
+def answer_english_program_interest(
+    lead: dict,
+) -> str:
+
+    response = (
+        "Of course 😊 Junior Coaching is a development "
+        "programme designed for teenagers aged 12–18. "
+        "It supports teenagers in areas such as self-awareness, "
+        "communication, decision-making and responsibility."
+    )
+
+    current_field = get_next_missing_field(
+        lead
+    )
+
+    if current_field == "parent_name":
+
+        response += (
+            "\n\nMay I ask how I should address you?"
+        )
+
+    elif current_field:
+
+        # Flow hazırda AZ saxlanılır
+        response += (
+            "\n\n"
+            + get_personalized_question(
+                current_field,
+                lead,
+            )
+        )
+
+    return response
+
+
+def answer_embedded_age_interest(
+    age: int,
+    lead: dict,
+) -> str:
+
+    if age < 12:
+
+        response = (
+            f"Əlbəttə, məlumat verə bilərəm 😊 "
+            f"Junior Coaching proqramı hazırda 12–18 yaşlı "
+            f"yeniyetmələr üçün nəzərdə tutulub. "
+            f"Qeyd etdiyiniz {age} yaş hazırkı yaş "
+            f"qrupuna uyğun deyil."
+        )
+
+    elif age <= 18:
+
+        response = (
+            f"Əlbəttə 😊 {age} yaş Junior Coaching "
+            f"proqramının 12–18 yaş aralığına uyğundur."
+        )
+
+    else:
+
+        response = (
+            f"Junior Coaching proqramı hazırda 12–18 yaşlı "
+            f"yeniyetmələr üçün nəzərdə tutulub."
+        )
+
+    return append_current_question(
+        response,
+        lead,
+    )
+
+
 # =========================================================
-# 16. MAIN AGENT
+# 19. MAIN AGENT
 # =========================================================
 
 def lead_agent_reply(
@@ -2412,88 +2572,174 @@ def lead_agent_reply(
         lead
     )
 
-    # hər turn-də reset
     lead[
         "_last_faq_score"
     ] = None
 
-
     # =====================================================
-    # STRONG INTERRUPTS BEFORE CLASSIFIER
+    # HARD ROUTES — CURRENT FIELD-DƏN ƏVVƏL
     # =====================================================
 
     if is_child_presence_question(
         user_text
     ):
 
-        lead[
-            "_last_intent"
-        ] = "faq_question"
-
-        lead[
-            "_last_confidence"
-        ] = 1.0
+        lead["_last_intent"] = "faq_question"
+        lead["_last_confidence"] = 1.0
 
         return answer_child_presence(
             lead
         )
 
+    if is_contact_here_question(
+        user_text
+    ):
+
+        lead["_last_intent"] = "faq_question"
+        lead["_last_confidence"] = 1.0
+
+        return answer_contact_here(
+            lead
+        )
 
     if is_call_timing_question(
         user_text
     ):
 
-        lead[
-            "_last_intent"
-        ] = "faq_question"
+        lead["_last_intent"] = "faq_question"
+        lead["_last_confidence"] = 1.0
 
-        lead[
-            "_last_confidence"
-        ] = 1.0
-
-        return answer_call_timing_question(
+        return answer_call_timing(
             lead
         )
-
 
     if is_not_available_today(
         user_text
     ):
 
-        lead[
-            "_last_intent"
-        ] = "pause_request"
-
-        lead[
-            "_last_confidence"
-        ] = 1.0
+        lead["_last_intent"] = "pause_request"
+        lead["_last_confidence"] = 1.0
 
         return answer_not_available_today(
             lead
         )
 
-
     if is_pause_or_goodbye(
         user_text
     ):
 
-        lead[
-            "_last_intent"
-        ] = "pause_request"
-
-        lead[
-            "_last_confidence"
-        ] = 1.0
+        lead["_last_intent"] = "pause_request"
+        lead["_last_confidence"] = 1.0
 
         return (
-            "Əlbəttə 😊 İstədiyiniz zaman "
-            "yenidən yaza bilərsiniz. "
-            "Təşəkkür edirik."
+            "Əlbəttə 😊 İstədiyiniz zaman yenidən "
+            "yaza bilərsiniz. Təşəkkür edirik."
         )
 
+    if is_bot_meta_question(
+        user_text
+    ):
+
+        lead["_last_intent"] = "meta_question"
+        lead["_last_confidence"] = 1.0
+
+        return answer_meta_question(
+            lead
+        )
+
+    # -----------------------------------------------------
+    # Embedded age + programme interest
+    # -----------------------------------------------------
+
+    embedded_age = detect_embedded_child_age(
+        user_text
+    )
+
+    if (
+        embedded_age is not None
+        and is_general_program_interest(
+            user_text
+        )
+    ):
+
+        lead["_last_intent"] = "faq_question"
+        lead["_last_confidence"] = 1.0
+
+        return answer_embedded_age_interest(
+            embedded_age,
+            lead,
+        )
+
+    # -----------------------------------------------------
+    # English
+    # -----------------------------------------------------
+
+    if is_english_program_info_question(
+        user_text
+    ):
+
+        lead["_last_intent"] = "faq_question"
+        lead["_last_confidence"] = 1.0
+
+        return answer_english_program_interest(
+            lead
+        )
+
+    # -----------------------------------------------------
+    # Programme interest
+    # -----------------------------------------------------
+
+    if is_general_program_interest(
+        user_text
+    ):
+
+        lead["_last_intent"] = "faq_question"
+        lead["_last_confidence"] = 1.0
+
+        return answer_general_program_interest(
+            lead
+        )
+
+    # -----------------------------------------------------
+    # Multiple children must work before field validation
+    # -----------------------------------------------------
+
+    if (
+        current_field
+        in [
+            "child_name",
+            "child_age",
+        ]
+        and is_multiple_children_message(
+            user_text
+        )
+    ):
+
+        lead["_last_intent"] = "field_answer"
+        lead["_last_confidence"] = 1.0
+
+        if current_field == "child_name":
+
+            return (
+                "Başa düşürəm 😊 İki övladınız üçün də "
+                "məlumat ala bilərik. Hələlik birinci "
+                "övladınızdan başlayaq. "
+                "Onun adını qeyd edə bilərsiniz?"
+            )
+
+        child_name = lead.get(
+            "child_name"
+        )
+
+        return (
+            "Başa düşürəm, iki övladınız var. "
+            "Hazırda müraciəti bir övlad üzrə davam etdiririk. "
+            f"Əvvəlcə {child_genitive(child_name)} "
+            "yaşını qeyd edə bilərsiniz?"
+        )
 
     # =====================================================
-    # CLASSIFICATION
+    # ROUTER
     # =====================================================
 
     classification = safe_classify_message(
@@ -2505,45 +2751,18 @@ def lead_agent_reply(
         "intent"
     ]
 
-    lead[
-        "_last_intent"
-    ] = intent
+    lead["_last_intent"] = intent
 
-    lead[
-        "_last_confidence"
-    ] = classification.get(
-        "confidence"
+    lead["_last_confidence"] = (
+        classification.get(
+            "confidence"
+        )
     )
 
     print(
         "INTENT DEBUG:",
         classification,
     )
-
-
-    # =====================================================
-    # META QUESTION
-    # =====================================================
-
-    if intent == "meta_question":
-
-        return answer_meta_question(
-            lead
-        )
-
-
-    # =====================================================
-    # PAUSE
-    # =====================================================
-
-    if intent == "pause_request":
-
-        return (
-            "Əlbəttə 😊 İstədiyiniz zaman "
-            "yenidən yaza bilərsiniz. "
-            "Təşəkkür edirik."
-        )
-
 
     # =====================================================
     # GREETING
@@ -2554,8 +2773,7 @@ def lead_agent_reply(
         if current_field == "parent_name":
 
             return (
-                "Salam 😊 "
-                "Sizə necə müraciət edə bilərəm?"
+                "Salam 😊 Sizə necə müraciət edə bilərəm?"
             )
 
         if current_field:
@@ -2572,6 +2790,26 @@ def lead_agent_reply(
             "Salam 😊 Müraciətiniz artıq qeydə alınıb."
         )
 
+    # =====================================================
+    # META
+    # =====================================================
+
+    if intent == "meta_question":
+
+        return answer_meta_question(
+            lead
+        )
+
+    # =====================================================
+    # PAUSE
+    # =====================================================
+
+    if intent == "pause_request":
+
+        return (
+            "Əlbəttə 😊 İstədiyiniz zaman yenidən "
+            "yaza bilərsiniz. Təşəkkür edirik."
+        )
 
     # =====================================================
     # SAFETY
@@ -2586,12 +2824,9 @@ def lead_agent_reply(
         return (
             "Bu hal təcili peşəkar diqqət tələb edə bilər. "
             "Junior Coaching psixoloji və ya tibbi yardımı "
-            "əvəz etmir. Övladınız hazırda təhlükədədirsə, "
-            "onu tək qoymayın və dərhal uyğun təcili yardım "
-            "və psixi sağlamlıq mütəxəssisi ilə əlaqə saxlayın. "
-            "Müraciətiniz məsul əməkdaşa yönləndirilir."
+            "əvəz etmir. Müraciətiniz məsul əməkdaşa "
+            "yönləndirilir."
         )
-
 
     # =====================================================
     # COMPLAINT
@@ -2605,13 +2840,12 @@ def lead_agent_reply(
 
         return (
             "Narahatlığınızı başa düşürəm. "
-            "Müraciətinizi məsul əməkdaşa yönləndirmək "
-            "üçün qeydə aldım."
+            "Müraciətinizi məsul əməkdaşa "
+            "yönləndirmək üçün qeydə aldım."
         )
 
-
     # =====================================================
-    # HUMAN AGENT
+    # HUMAN
     # =====================================================
 
     if intent == "human_agent_request":
@@ -2622,10 +2856,9 @@ def lead_agent_reply(
 
         return (
             "Əlbəttə. Müraciətinizi Junior Coaching "
-            "komandasından məsul əməkdaşa yönləndirmək "
-            "üçün qeydə aldım."
+            "komandasından məsul əməkdaşa "
+            "yönləndirmək üçün qeydə aldım."
         )
-
 
     # =====================================================
     # FAQ
@@ -2633,35 +2866,41 @@ def lead_agent_reply(
 
     if intent == "faq_question":
 
-        # əvvəl xüsusi qaydalar
+        # Təkrar special handlers
         if is_child_presence_question(
             user_text
         ):
-
             return answer_child_presence(
+                lead
+            )
+
+        if is_contact_here_question(
+            user_text
+        ):
+            return answer_contact_here(
                 lead
             )
 
         if is_call_timing_question(
             user_text
         ):
-
-            return answer_call_timing_question(
+            return answer_call_timing(
                 lead
             )
 
+        if is_general_program_interest(
+            user_text
+        ):
+            return answer_general_program_interest(
+                lead
+            )
 
         faq_result = answer_faq_question(
             user_text=user_text,
             min_score=faq_min_score,
         )
 
-
         if faq_result is not None:
-
-            faq_answer = faq_result[
-                "answer"
-            ]
 
             lead[
                 "_last_faq_score"
@@ -2669,37 +2908,39 @@ def lead_agent_reply(
                 "score"
             )
 
+            response = faq_result[
+                "answer"
+            ]
+
             if current_field:
 
-                return (
-                    f"{faq_answer}\n\n"
+                response += (
+                    "\n\n"
                     + get_personalized_question(
                         current_field,
                         lead,
                     )
                 )
 
-            return faq_answer
+            return response
 
+        response = (
+            "Bu sualla bağlı məlumat bazasında "
+            "dəqiq cavab tapmadım. İstəsəniz sualınızı "
+            "məsul əməkdaşa yönləndirə bilərik."
+        )
 
         if current_field:
 
-            return (
-                "Bu sualla bağlı məlumat bazasında "
-                "dəqiq cavab tapmadım. "
-                "İstəsəniz bu sualı məsul əməkdaşa "
-                "yönləndirə bilərik.\n\n"
+            response += (
+                "\n\n"
                 + get_personalized_question(
                     current_field,
                     lead,
                 )
             )
 
-        return (
-            "Bu sualla bağlı məlumat bazasında "
-            "dəqiq cavab tapmadım."
-        )
-
+        return response
 
     # =====================================================
     # REGISTRATION
@@ -2717,7 +2958,6 @@ def lead_agent_reply(
                     lead,
                 )
             )
-
 
     # =====================================================
     # UNRELATED
@@ -2741,7 +2981,6 @@ def lead_agent_reply(
             "suallara cavab verirəm."
         )
 
-
     # =====================================================
     # FIELD ANSWER
     # =====================================================
@@ -2756,26 +2995,22 @@ def lead_agent_reply(
             "Məlumatlarınız artıq tamamlanıb."
         )
 
-
     success, error_message = save_user_answer(
         lead=lead,
         field=current_field,
         user_text=user_text,
     )
 
-
     if not success:
 
         return error_message
-
 
     next_field = get_next_missing_field(
         lead
     )
 
-
     # =====================================================
-    # COMPLETED
+    # FINISHED
     # =====================================================
 
     if next_field is None:
@@ -2798,26 +3033,22 @@ def lead_agent_reply(
             "preferred_call_time"
         )
 
-
         final_message = (
             f"Əla, {parent_display}. "
             f"Sizinlə {call_time} əlaqə saxlanılması "
             "üçün qeyd etdim. ✅"
         )
 
-
         if child_name:
 
             final_message += (
                 "\n\n"
-                "İlkin zəng zamanı "
+                f"İlkin zəng zamanı "
                 f"{child_genitive(child_name)} "
                 "yanınızda olması vacib deyil."
             )
 
-
         return final_message
-
 
     return get_personalized_question(
         next_field,
@@ -2826,7 +3057,7 @@ def lead_agent_reply(
 
 
 # =========================================================
-# 17. SQLITE
+# 20. SQLITE INIT
 # =========================================================
 
 def init_db():
@@ -2835,107 +3066,65 @@ def init_db():
         DB_PATH
     ) as conn:
 
-
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS leads (
-
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-
                 parent_name TEXT,
-
                 parent_title TEXT,
-
                 child_name TEXT,
-
                 child_age INTEGER,
-
                 main_concern TEXT,
-
                 needs_concern_followup INTEGER DEFAULT 0,
-
                 concern_duration TEXT,
-
                 concern_onset TEXT,
-
                 phone TEXT,
-
                 preferred_call_time TEXT,
-
                 source TEXT,
-
                 status TEXT,
-
                 created_at TEXT,
-
                 updated_at TEXT
-
             )
             """
         )
-
 
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS conversation_logs (
-
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-
                 session_id TEXT NOT NULL,
-
                 user_message TEXT,
-
                 bot_response TEXT,
-
                 intent TEXT,
-
                 confidence REAL,
-
                 faq_score REAL,
-
                 current_field TEXT,
-
                 parent_name TEXT,
-
                 parent_title TEXT,
-
                 child_name TEXT,
-
                 child_age INTEGER,
-
                 main_concern TEXT,
-
                 phone TEXT,
-
                 preferred_call_time TEXT,
-
                 status TEXT,
-
                 source TEXT,
-
                 created_at TEXT
-
             )
             """
         )
 
-
         # ---------------------------------------------
-        # LEADS MIGRATION
+        # leads migrations
         # ---------------------------------------------
-
-        cursor = conn.execute(
-            "PRAGMA table_info(leads)"
-        )
 
         existing = {
             row[1]
-            for row in cursor.fetchall()
+            for row in conn.execute(
+                "PRAGMA table_info(leads)"
+            ).fetchall()
         }
 
-
         required = {
-
             "parent_title":
                 "TEXT",
 
@@ -2949,11 +3138,7 @@ def init_db():
                 "TEXT",
         }
 
-
-        for (
-            column,
-            dtype,
-        ) in required.items():
+        for column, dtype in required.items():
 
             if column not in existing:
 
@@ -2964,45 +3149,29 @@ def init_db():
                     """
                 )
 
-
         # ---------------------------------------------
-        # LOG MIGRATION
+        # conversation_logs migrations
         # ---------------------------------------------
-
-        cursor = conn.execute(
-            "PRAGMA table_info(conversation_logs)"
-        )
 
         existing_logs = {
             row[1]
-            for row in cursor.fetchall()
+            for row in conn.execute(
+                "PRAGMA table_info(conversation_logs)"
+            ).fetchall()
         }
 
-
         required_logs = {
-
             "intent": "TEXT",
-
             "confidence": "REAL",
-
             "faq_score": "REAL",
-
             "parent_title": "TEXT",
-
             "child_age": "INTEGER",
-
             "main_concern": "TEXT",
-
             "preferred_call_time": "TEXT",
-
             "source": "TEXT",
         }
 
-
-        for (
-            column,
-            dtype,
-        ) in required_logs.items():
+        for column, dtype in required_logs.items():
 
             if column not in existing_logs:
 
@@ -3013,12 +3182,11 @@ def init_db():
                     """
                 )
 
-
         conn.commit()
 
 
 # =========================================================
-# 18. TIME
+# 21. TIME
 # =========================================================
 
 def get_baku_time():
@@ -3033,7 +3201,7 @@ def get_baku_time():
 
 
 # =========================================================
-# 19. FIND LEAD
+# 22. FIND LEAD
 # =========================================================
 
 def find_lead_by_phone(
@@ -3042,7 +3210,6 @@ def find_lead_by_phone(
 
     if not phone:
         return None
-
 
     with sqlite3.connect(
         DB_PATH
@@ -3065,7 +3232,6 @@ def find_lead_by_phone(
             ),
         ).fetchone()
 
-
         return (
             dict(row)
             if row
@@ -3074,7 +3240,7 @@ def find_lead_by_phone(
 
 
 # =========================================================
-# 20. SAVE LEAD
+# 23. SAVE LEAD
 # =========================================================
 
 def save_lead_to_db(
@@ -3083,53 +3249,33 @@ def save_lead_to_db(
 
     now = get_baku_time()
 
-
     with sqlite3.connect(
         DB_PATH
     ) as conn:
 
         cursor = conn.cursor()
 
-
         cursor.execute(
             """
             INSERT INTO leads (
-
                 parent_name,
-
                 parent_title,
-
                 child_name,
-
                 child_age,
-
                 main_concern,
-
                 needs_concern_followup,
-
                 concern_duration,
-
                 concern_onset,
-
                 phone,
-
                 preferred_call_time,
-
                 source,
-
                 status,
-
                 created_at,
-
                 updated_at
-
             )
-
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-
             (
-
                 lead.get(
                     "parent_name"
                 ),
@@ -3184,11 +3330,9 @@ def save_lead_to_db(
                 ),
 
                 now,
-
                 now,
             ),
         )
-
 
         conn.commit()
 
@@ -3196,7 +3340,7 @@ def save_lead_to_db(
 
 
 # =========================================================
-# 21. SAVE LOG
+# 24. SAVE CONVERSATION LOG
 # =========================================================
 
 def save_conversation_log(
@@ -3209,7 +3353,6 @@ def save_conversation_log(
 
     now = get_baku_time()
 
-
     with sqlite3.connect(
         DB_PATH
     ) as conn:
@@ -3217,52 +3360,29 @@ def save_conversation_log(
         conn.execute(
             """
             INSERT INTO conversation_logs (
-
                 session_id,
-
                 user_message,
-
                 bot_response,
-
                 intent,
-
                 confidence,
-
                 faq_score,
-
                 current_field,
-
                 parent_name,
-
                 parent_title,
-
                 child_name,
-
                 child_age,
-
                 main_concern,
-
                 phone,
-
                 preferred_call_time,
-
                 status,
-
                 source,
-
                 created_at
-
             )
-
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-
             (
-
                 session_id,
-
                 user_message,
-
                 bot_response,
 
                 lead.get(
@@ -3319,12 +3439,11 @@ def save_conversation_log(
             ),
         )
 
-
         conn.commit()
 
 
 # =========================================================
-# 22. GET DATA
+# 25. ADMIN HELPERS
 # =========================================================
 
 def get_all_leads():
@@ -3376,7 +3495,7 @@ def get_all_conversation_logs():
 
 
 # =========================================================
-# DB INIT
+# INIT
 # =========================================================
 
 init_db()
