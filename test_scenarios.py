@@ -1,0 +1,872 @@
+"""
+Junior Coaching — reqressiya testləri
+
+İki hissədən ibarətdir:
+
+1. OFFLINE testlər — OPENAI_API_KEY tələb etmir.
+   Ad validasiyası, rol tanınması, telefon, FAQ recall.
+
+2. LIVE ssenarilər — real LLM çağırışı edir.
+   Müştəri rəyində qeyd olunan konkret hallar.
+
+İşə salmaq:
+
+    python3 test_scenarios.py           # yalnız offline
+    python3 test_scenarios.py --live    # offline + LLM ssenariləri
+"""
+
+import sys
+
+import bot_engine as bot
+
+
+PASSED = []
+FAILED = []
+
+
+def check(
+    name: str,
+    condition: bool,
+    detail: str = "",
+):
+
+    if condition:
+
+        PASSED.append(
+            name
+        )
+
+        print(
+            f"  ✓ {name}"
+        )
+
+    else:
+
+        FAILED.append(
+            (
+                name,
+                detail,
+            )
+        )
+
+        print(
+            f"  ✗ {name}"
+            + (
+                f"\n      {detail}"
+                if detail
+                else ""
+            )
+        )
+
+
+# =========================================================
+# OFFLINE — AD VALİDASİYASI
+# =========================================================
+
+def test_name_validation():
+
+    print(
+        "\nAd validasiyası (rəy: 'ad və rollar qarışır')"
+    )
+
+    # Ad OLMAYAN ifadələr rədd edilməlidir
+    for value in [
+        "Dedim yuxarıda",
+        "anasıyam",
+        "atasıyam",
+        "mənə",
+        "bilmirəm",
+        "hə",
+        "valideyniyəm",
+    ]:
+
+        check(
+            f"'{value}' ad kimi qəbul edilmir",
+            bot.clean_name(
+                value
+            ) is None,
+            f"clean_name -> {bot.clean_name(value)!r}",
+        )
+
+    # Real adlar qorunmalıdır
+    for value, expected in [
+        ("Orxan", "Orxan"),
+        ("Ayxan Məmmədov", "Ayxan Məmmədov"),
+        ("Toğruldur", "Toğrul"),
+        ("İsmayıldır", "İsmayıl"),
+        ("Bahadır", "Bahadır"),
+        ("Nadir", "Nadir"),
+    ]:
+
+        actual = bot.clean_name(
+            value
+        )
+
+        check(
+            f"'{value}' -> '{expected}'",
+            actual == expected,
+            f"alındı: {actual!r}",
+        )
+
+
+# =========================================================
+# OFFLINE — ROL -> BAŞLIQ
+# =========================================================
+
+def test_parent_role():
+
+    print(
+        "\nRol tanınması"
+    )
+
+    for text, expected in [
+        ("Salam, anasıyam Afət", "xanım"),
+        ("atasıyam", "bəy"),
+        ("nənəsiyəm", "xanım"),
+        ("adım Leyladır", ""),
+    ]:
+
+        actual = bot.detect_parent_title_from_role(
+            text
+        )
+
+        check(
+            f"'{text}' -> {expected!r}",
+            actual == expected,
+            f"alındı: {actual!r}",
+        )
+
+
+# =========================================================
+# OFFLINE — TELEFON
+# =========================================================
+
+def test_phone():
+
+    print(
+        "\nTelefon normallaşdırma"
+    )
+
+    for text, expected in [
+        ("0501234567", "0501234567"),
+        ("+994 50 123 45 67", "994501234567"),
+        ("050 123 45 67", "0501234567"),
+        ("12345", None),
+    ]:
+
+        actual = bot.normalize_phone(
+            text
+        )
+
+        check(
+            f"'{text}' -> {expected!r}",
+            actual == expected,
+            f"alındı: {actual!r}",
+        )
+
+
+# =========================================================
+# OFFLINE — FAQ RECALL
+# =========================================================
+
+def test_faq_recall():
+
+    print(
+        "\nFAQ recall (rəy: 'sualın mənasını səhv tutur')"
+    )
+
+    # Doğru cavab namizədlər arasında OLMALIDIR ki,
+    # LLM onu seçə bilsin.
+
+    for question, marker in [
+        ("görüşlər harada keçirilir?", "Məkan"),
+        ("telefon zəngi nə qədər davam edir?", "dəqiqə"),
+        ("görüşlər onlayn olur?", "onlayn"),
+        ("buraxılan görüşün əvəzi olurmu?", "buraxsa"),
+    ]:
+
+        candidates = bot.retrieve_faq_candidates(
+            question
+        )
+
+        found = any(
+            marker.lower() in item["question"].lower()
+            for item in candidates
+        )
+
+        check(
+            f"'{question}' namizədlərində '{marker}' var",
+            found,
+            "namizədlər: "
+            + ", ".join(
+                item["question"][:35]
+                for item in candidates
+            ),
+        )
+
+
+# =========================================================
+# OFFLINE — DÜZƏLİŞ MEXANİZMİ
+# =========================================================
+
+def test_corrections():
+
+    print(
+        "\nDüzəliş mexanizmi (rəy: 'state-i yeniləyə bilmir')"
+    )
+
+    lead = bot.create_empty_lead(
+        "TEST"
+    )
+
+    lead["parent_name"] = "Afət"
+    lead["children"][0]["name"] = "Səhv Ad"
+
+    changed = bot.apply_corrections(
+        lead,
+        [
+            {
+                "field": "child_name",
+                "child_index": 0,
+                "value": "Tunar",
+            }
+        ],
+    )
+
+    check(
+        "uşağın adı düzəlir",
+        lead["children"][0]["name"] == "Tunar",
+        f"alındı: {lead['children'][0]['name']!r}",
+    )
+
+    check(
+        "düzəliş qeydə alınır",
+        "child_name" in changed,
+        f"changed={changed}",
+    )
+
+    # Boş slotun ilk dəfə dolması düzəliş SAYILMAMALIDIR
+    lead2 = bot.create_empty_lead(
+        "TEST"
+    )
+
+    changed2 = bot.apply_corrections(
+        lead2,
+        [
+            {
+                "field": "child_name",
+                "child_index": 0,
+                "value": "Ayxan",
+            }
+        ],
+    )
+
+    check(
+        "ilk dolma düzəliş sayılmır",
+        changed2 == [],
+        f"changed={changed2}",
+    )
+
+
+# =========================================================
+# OFFLINE — ÇOX UŞAQ STRUKTURU
+# =========================================================
+
+def test_multiple_children():
+
+    print(
+        "\nÇox uşaq strukturu"
+    )
+
+    lead = bot.create_empty_lead(
+        "TEST"
+    )
+
+    bot.merge_children(
+        lead,
+        [
+            {
+                "name": "Ayxan",
+                "age": 0,
+                "main_concern": "",
+            },
+            {
+                "name": "Orxan",
+                "age": 0,
+                "main_concern": "",
+            },
+        ],
+        "2 usaqdir ayxan ve orxan",
+    )
+
+    names = [
+        c.get("name")
+        for c in lead["children"]
+    ]
+
+    check(
+        "iki uşaq da saxlanılır",
+        names == [
+            "Ayxan",
+            "Orxan",
+        ],
+        f"alındı: {names}",
+    )
+
+    # -------------------------------------------------
+    # Rəy: "hamısı" cavabından sonra ikinci uşaq da
+    # eyni qayğını və uydurulmuş yaşı alırdı.
+    # -------------------------------------------------
+
+    lead = bot.create_empty_lead(
+        "TEST"
+    )
+
+    bot.ensure_child_slot(
+        lead,
+        0,
+    ).update(
+        {
+            "name": "Ayxan",
+            "age": 13,
+        }
+    )
+
+    bot.ensure_child_slot(
+        lead,
+        1,
+    )[
+        "name"
+    ] = "Orxan"
+
+    lead[
+        "active_child_index"
+    ] = 0
+
+    bot.merge_children(
+        lead,
+        [
+            {
+                "name": "Ayxan",
+                "age": 13,
+                "main_concern": "özgüvən",
+            },
+            {
+                "name": "Orxan",
+                "age": 15,
+                "main_concern": "özgüvən",
+            },
+        ],
+        "hamisi",
+    )
+
+    second = lead["children"][1]
+
+    check(
+        "aktiv uşağın qayğısı ikinciyə sızmır",
+        second.get(
+            "main_concern"
+        ) is None,
+        f"alındı: {second.get('main_concern')}",
+    )
+
+    check(
+        "deyilməmiş yaş ikinci uşağa yazılmır",
+        second.get(
+            "age"
+        ) is None,
+        f"alındı: {second.get('age')}",
+    )
+
+    check(
+        "aktiv uşaq öz cavabını alır",
+        lead["children"][0].get(
+            "main_concern"
+        ) == "özgüvən",
+        f"alındı: {lead['children'][0].get('main_concern')}",
+    )
+
+    # -------------------------------------------------
+    # Mesajda keçməyən uşaq slotu açılmır.
+    # -------------------------------------------------
+
+    lead = bot.create_empty_lead(
+        "TEST"
+    )
+
+    bot.merge_children(
+        lead,
+        [
+            {
+                "name": "Ayxan",
+                "age": 13,
+            },
+            {
+                "name": "Kamran",
+                "age": 9,
+            },
+        ],
+        "13",
+    )
+
+    check(
+        "uydurulmuş uşaq əlavə edilmir",
+        len(
+            lead["children"]
+        ) == 1,
+        f"alındı: {[c.get('name') for c in lead['children']]}",
+    )
+
+
+# =========================================================
+# OFFLINE — SƏRBƏST MƏTN VALİDASİYASI
+# =========================================================
+
+def test_fallback_guards():
+
+    print(
+        "\nSərbəst mətn sahələrinin qorunması"
+    )
+
+    lead = bot.create_empty_lead(
+        "TEST"
+    )
+
+    bot.save_current_field_fallback(
+        lead,
+        "main_concern",
+        "bilmirəm",
+    )
+
+    check(
+        "'bilmirəm' main_concern kimi yazılmır",
+        not lead["children"][0].get(
+            "main_concern"
+        ),
+        f"alındı: {lead['children'][0].get('main_concern')!r}",
+    )
+
+    bot.save_current_field_fallback(
+        lead,
+        "child_name",
+        "Dedim yuxarıda",
+    )
+
+    check(
+        "'Dedim yuxarıda' ad kimi yazılmır",
+        not lead["children"][0].get(
+            "name"
+        ),
+        f"alındı: {lead['children'][0].get('name')!r}",
+    )
+
+
+# =========================================================
+# OFFLINE — İMTİNA
+# =========================================================
+
+def test_refusal():
+
+    print(
+        "\nİmtina (rəy: eyni sual sonsuz təkrarlanırdı)"
+    )
+
+    for text in [
+        "men telefonla elaqe ucun uygun deyilem",
+        "vermək istəmirəm",
+        "nömrə yazmaq istəmirəm",
+        "lazım deyil",
+    ]:
+
+        check(
+            f"'{text}' imtina kimi tanınır",
+            bot.is_refusal(
+                text
+            ),
+        )
+
+    check(
+        "'0501234567' imtina deyil",
+        not bot.is_refusal(
+            "0501234567"
+        ),
+    )
+
+    # İkinci imtinadan sonra sahə keçilməlidir
+    lead = bot.create_empty_lead(
+        "TEST"
+    )
+
+    bot.handle_refusal(
+        lead,
+        "phone",
+    )
+
+    check(
+        "birinci imtinada sahə keçilmir",
+        "phone" not in lead["_skipped_fields"],
+    )
+
+    bot.handle_refusal(
+        lead,
+        "phone",
+    )
+
+    check(
+        "ikinci imtinada telefon keçilir",
+        "phone" in lead["_skipped_fields"],
+        f"skipped={lead['_skipped_fields']}",
+    )
+
+    check(
+        "telefon keçiləndə zəng vaxtı da keçilir",
+        "preferred_call_time" in lead["_skipped_fields"],
+        f"skipped={lead['_skipped_fields']}",
+    )
+
+    # İmtina mətni sahəyə yazılmamalıdır
+    lead2 = bot.create_empty_lead(
+        "TEST"
+    )
+
+    bot.save_current_field_fallback(
+        lead2,
+        "main_concern",
+        "men telefonla elaqe ucun uygun deyilem",
+    )
+
+    check(
+        "imtina mətni main_concern-ə yazılmır",
+        not lead2["children"][0].get(
+            "main_concern"
+        ),
+        f"alındı: {lead2['children'][0].get('main_concern')!r}",
+    )
+
+
+# =========================================================
+# OFFLINE — "HAMISI"
+# =========================================================
+
+def test_concern_answer():
+
+    print(
+        "\n'hamısı' cavabı (FAQ sualı deyil)"
+    )
+
+    for text in [
+        "hamisi",
+        "hamısı",
+        "hər biri",
+        "özgüvən",
+    ]:
+
+        check(
+            f"'{text}' birbaşa cavab kimi tanınır",
+            bot.is_direct_concern_answer(
+                text
+            ),
+        )
+
+    check(
+        "'qiymət nə qədərdir?' cavab deyil",
+        not bot.is_direct_concern_answer(
+            "qiymət nə qədərdir?"
+        ),
+    )
+
+
+# =========================================================
+# OFFLINE — TELEFONSUZ YEKUN
+# =========================================================
+
+def test_no_contact_finalization():
+
+    print(
+        "\nTelefonsuz yekunlaşma"
+    )
+
+    lead = bot.create_empty_lead(
+        "TEST"
+    )
+
+    lead["parent_name"] = "Leyla"
+
+    lead["children"][0].update(
+        name="Sara",
+        age=11,
+        main_concern="özgüvən",
+    )
+
+    lead["_skipped_fields"] = [
+        "phone",
+        "preferred_call_time",
+    ]
+
+    check(
+        "telefon keçiləndə axın bitir",
+        bot.get_next_missing_field(
+            lead
+        ) is None,
+        f"next={bot.get_next_missing_field(lead)!r}",
+    )
+
+    message = bot.finalize_lead(
+        lead
+    )
+
+    check(
+        "status NO_CONTACT olur",
+        lead["status"] == "NO_CONTACT",
+        f"status={lead['status']!r}",
+    )
+
+    check(
+        "'zəng edəcəyik' vədi verilmir",
+        "zəng" not in message.lower()
+        or "əlaqə saxlaya bilməyəcəyik" in message,
+        message[:110],
+    )
+
+
+# =========================================================
+# LIVE — MÜŞTƏRİ RƏYİNDƏKİ SSENARİLƏR
+# =========================================================
+
+def run_dialog(
+    messages,
+):
+
+    lead = bot.create_empty_lead(
+        "TEST"
+    )
+
+    replies = []
+
+    for message in messages:
+
+        replies.append(
+            bot.lead_agent_reply(
+                message,
+                lead,
+            )
+        )
+
+    return (
+        lead,
+        replies,
+    )
+
+
+def test_live_scenarios():
+
+    print(
+        "\nLIVE ssenarilər (LLM)"
+    )
+
+    if bot.client is None:
+
+        print(
+            "  ! OPENAI_API_KEY yoxdur — keçilir"
+        )
+
+        return
+
+    # 1. Bir mesajda bütün məlumatlar
+    lead, _ = run_dialog(
+        [
+            "Mən Nərgizəm, oğlum Orxanın 15 yaşı var, "
+            "özgüvəni zəifdir, 0501234567, "
+            "sabah 15:00-dan sonra",
+        ]
+    )
+
+    child = lead["children"][0]
+
+    check(
+        "bir mesajdan bütün slotlar çıxarılır",
+        (
+            lead["parent_name"] == "Nərgiz"
+            and child.get("name") == "Orxan"
+            and child.get("age") == 15
+            and lead["phone"] == "0501234567"
+            and bool(lead["preferred_call_time"])
+        ),
+        f"parent={lead['parent_name']!r} child={child} "
+        f"phone={lead['phone']!r} time={lead['preferred_call_time']!r}",
+    )
+
+    # 2. Rol ad kimi götürülmür + düzəliş
+    lead, _ = run_dialog(
+        [
+            "Salam, anasıyam",
+            "Aygün mənəm, uşağın adı Ayxandır",
+        ]
+    )
+
+    check(
+        "'anasıyam' ad deyil, düzəliş tətbiq olunur",
+        (
+            lead["parent_name"] == "Aygün"
+            and lead["children"][0].get("name") == "Ayxan"
+        ),
+        f"parent={lead['parent_name']!r} "
+        f"child={lead['children'][0].get('name')!r}",
+    )
+
+    # 3. Sualın mənası
+    lead, replies = run_dialog(
+        [
+            "görüşlər harada keçirilir?",
+        ]
+    )
+
+    check(
+        "'harada' sualına məkan cavabı verilir",
+        any(
+            word in replies[0]
+            for word in [
+                "ADAS",
+                "Nərimanov",
+                "küçəsi",
+            ]
+        ),
+        replies[0][:110],
+    )
+
+    # 4. Danışıq ifadəsi KB-də axtarılmır
+    _, replies = run_dialog(
+        [
+            "bir sual verə bilərəm?",
+        ]
+    )
+
+    check(
+        "'bir sual verə bilərəm?' -> buyurun",
+        "buyurun" in replies[0].lower(),
+        replies[0][:110],
+    )
+
+    # 5. İki uşaq
+    lead, _ = run_dialog(
+        [
+            "Salam, adım Muraddır",
+            "2 uşaqdır ayxan və orxan",
+        ]
+    )
+
+    names = [
+        c.get("name")
+        for c in lead["children"]
+        if c.get("name")
+    ]
+
+    check(
+        "iki uşağın adı da saxlanılır",
+        len(names) == 2,
+        f"alındı: {names}",
+    )
+
+    # 6. Ekran 4-dəki döngü
+    lead, replies = run_dialog(
+        [
+            "Salam, anasıyam afət",
+            "Toğruldur birdəki sizdə görüşlər canlı olur yoxsa online",
+            "Dedim yuxarıda",
+        ]
+    )
+
+    check(
+        "'Dedim yuxarıda' uşaq adı olmur",
+        lead["children"][0].get(
+            "name"
+        ) == "Toğrul",
+        f"alındı: {lead['children'][0].get('name')!r}",
+    )
+
+    # 7. Telefon imtinası döngə yaratmır
+    lead, replies = run_dialog(
+        [
+            "salam adim leyladir",
+            "qizim sara",
+            "11",
+            "hamisi",
+            "men telefonla elaqe ucun uygun deyilem",
+            "vermek istemirem",
+        ]
+    )
+
+    check(
+        "telefon imtinası döngə yaratmır",
+        lead["status"] == "NO_CONTACT",
+        f"status={lead['status']!r} skipped={lead['_skipped_fields']}",
+    )
+
+    check(
+        "imtina ESCALATED etmir",
+        lead["status"] != "ESCALATED",
+        f"status={lead['status']!r}",
+    )
+
+    check(
+        "'hamısı' FAQ cavabı qaytarmır",
+        "Akademik" not in replies[3],
+        replies[3][:110],
+    )
+
+
+# =========================================================
+# MAIN
+# =========================================================
+
+def main():
+
+    print(
+        "Junior Coaching — reqressiya testləri"
+    )
+
+    test_name_validation()
+    test_parent_role()
+    test_phone()
+    test_faq_recall()
+    test_corrections()
+    test_multiple_children()
+    test_fallback_guards()
+    test_refusal()
+    test_concern_answer()
+    test_no_contact_finalization()
+
+    if "--live" in sys.argv:
+
+        test_live_scenarios()
+
+    print(
+        f"\n{'='*50}"
+    )
+
+    print(
+        f"Keçdi: {len(PASSED)}   Uğursuz: {len(FAILED)}"
+    )
+
+    if FAILED:
+
+        print(
+            "\nUğursuz testlər:"
+        )
+
+        for name, detail in FAILED:
+
+            print(
+                f"  - {name}"
+            )
+
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+
+    sys.exit(
+        main()
+    )

@@ -1,5 +1,9 @@
+import hmac
+import os
 import uuid
 import sqlite3
+
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -66,6 +70,164 @@ if "lead_saved" not in st.session_state:
 
 
 # =========================================================
+# HELPER — ADMIN PASSWORD
+# =========================================================
+
+def secrets_file_exists() -> bool:
+
+    """
+    Streamlit-in secrets.toml axtardığı yerlər.
+
+    Streamlit Cloud da şifrələri ev qovluğundakı
+    bu fayla yazır, ona görə yoxlama hər iki mühitdə işləyir.
+    """
+
+    candidates = [
+        Path.home()
+        / ".streamlit"
+        / "secrets.toml",
+
+        Path(__file__).parent
+        / ".streamlit"
+        / "secrets.toml",
+
+        Path.cwd()
+        / ".streamlit"
+        / "secrets.toml",
+    ]
+
+    return any(
+        path.is_file()
+        for path in candidates
+    )
+
+
+def get_admin_password():
+
+    """
+    Şifrəni əvvəlcə Streamlit Secrets-dən,
+    sonra mühit dəyişənindən oxuyur.
+
+    Heç biri təyin edilməyibsə None qaytarır.
+
+    QEYD: fayl yoxdursa st.secrets-ə ÜMUMİYYƏTLƏ
+    toxunmuruq. Streamlit "No secrets files found"
+    xətasını exception atmazdan ƏVVƏL ekrana yazır,
+    ona görə try/except onu gizlədə bilmir —
+    ADMIN_PASSWORD mühit dəyişəni ilə düzgün işləyən
+    quraşdırmada da qırmızı xəta görünürdü.
+    """
+
+    if secrets_file_exists():
+
+        try:
+
+            secret = st.secrets.get(
+                "ADMIN_PASSWORD"
+            )
+
+            if secret:
+                return str(
+                    secret
+                )
+
+        except Exception:
+
+            # Fayl var, amma oxunmur/sınıqdır.
+            pass
+
+    return os.environ.get(
+        "ADMIN_PASSWORD"
+    )
+
+
+# =========================================================
+# HELPER — PERSIST LEAD
+# =========================================================
+
+def persist_lead_once(
+    lead: dict,
+):
+
+    """
+    Leadi bir dəfə bazaya yazır.
+
+    CALL_REQUESTED üçün istifadəçiyə müraciət nömrəsi qaytarır.
+    ESCALATED üçün lead yenə saxlanılır, lakin əlavə
+    təsdiq mesajı göstərilmir (None qaytarır).
+    """
+
+    if st.session_state.lead_saved:
+        return None
+
+    status = lead.get(
+        "status"
+    )
+
+    phone = lead.get(
+        "phone"
+    )
+
+    existing_lead = (
+        bot.find_lead_by_phone(
+            phone
+        )
+        if phone
+        else None
+    )
+
+    if existing_lead is not None:
+
+        st.session_state.lead_saved = True
+
+        if status == "CALL_REQUESTED":
+
+            return (
+                "Bu telefon nömrəsi ilə artıq "
+                f"{existing_lead['id']} nömrəli "
+                "müraciət mövcuddur. "
+                "Məlumatınız komanda tərəfindən "
+                "nəzərə alınacaq."
+            )
+
+        return None
+
+    try:
+
+        lead_id = bot.save_lead_to_db(
+            lead
+        )
+
+        st.session_state.lead_saved = True
+
+        if status == "CALL_REQUESTED":
+
+            return (
+                "Müraciətiniz sistemdə qeyd edildi. "
+                f"Müraciət nömrəniz: {lead_id}"
+            )
+
+        return None
+
+    except Exception as exc:
+
+        print(
+            "LEAD SAVE ERROR:",
+            exc,
+        )
+
+        if status == "CALL_REQUESTED":
+
+            return (
+                "Müraciət məlumatlarınız toplandı, "
+                "lakin sistemdə saxlanarkən "
+                "texniki problem yarandı."
+            )
+
+        return None
+
+
+# =========================================================
 # HELPER — RESET CHAT
 # =========================================================
 
@@ -115,13 +277,26 @@ with st.sidebar:
         key="admin_password",
     )
 
-    # Hələlik test üçün.
-    # Sonra bunu Streamlit Secrets-ə keçirəcəyik.
-    ADMIN_PASSWORD = "junior2026"
+    # Şifrə koda yazılmır.
+    # .streamlit/secrets.toml faylından
+    # və ya ADMIN_PASSWORD mühit dəyişənindən oxunur.
+    ADMIN_PASSWORD = get_admin_password()
 
     if admin_password:
 
-        if admin_password == ADMIN_PASSWORD:
+        if not ADMIN_PASSWORD:
+
+            st.error(
+                "Admin şifrəsi konfiqurasiya edilməyib. "
+                "`.streamlit/secrets.toml` faylında "
+                "`ADMIN_PASSWORD` təyin edin "
+                "(nümunə: `.streamlit/secrets.toml.example`)."
+            )
+
+        elif hmac.compare_digest(
+            admin_password,
+            ADMIN_PASSWORD,
+        ):
 
             st.success(
                 "Admin giriş aktivdir"
@@ -138,6 +313,36 @@ with st.sidebar:
                         SELECT *
                         FROM leads
                         ORDER BY id DESC
+                        """,
+                        conn,
+                    )
+
+                    # Hər uşaq ayrıca sətir.
+                    # leads cədvəlindəki child_name yalnız
+                    # BİRİNCİ uşağı göstərir, ona görə
+                    # ikinci uşaq burada axtarılmalıdır.
+                    children_df = pd.read_sql_query(
+                        """
+                        SELECT
+                            c.lead_id,
+                            l.parent_name,
+                            l.parent_title,
+                            l.phone,
+                            l.status,
+                            c.child_index,
+                            c.name,
+                            c.age,
+                            c.main_concern,
+                            c.needs_concern_followup,
+                            c.concern_duration,
+                            c.concern_onset,
+                            c.created_at
+                        FROM children AS c
+                        JOIN leads AS l
+                            ON l.id = c.lead_id
+                        ORDER BY
+                            c.lead_id DESC,
+                            c.child_index
                         """,
                         conn,
                     )
@@ -159,6 +364,11 @@ with st.sidebar:
                 st.metric(
                     "Lead sayı",
                     len(leads_df),
+                )
+
+                st.metric(
+                    "Uşaq sayı",
+                    len(children_df),
                 )
 
                 st.metric(
@@ -228,6 +438,59 @@ with st.sidebar:
                         data=leads_csv,
                         file_name=(
                             "junior_coaching_leads.csv"
+                        ),
+                        mime="text/csv",
+                    )
+
+
+                st.divider()
+
+
+                # -----------------------------------------
+                # CHILDREN
+                # -----------------------------------------
+
+                st.subheader(
+                    "Uşaqlar"
+                )
+
+                st.caption(
+                    "Leads cədvəlindəki `child_name` yalnız "
+                    "birinci uşağı göstərir. "
+                    "Bütün uşaqlar bu siyahıdadır."
+                )
+
+                if children_df.empty:
+
+                    st.info(
+                        "Hələ uşaq qeydi yoxdur."
+                    )
+
+                else:
+
+                    st.dataframe(
+                        children_df,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+
+                    children_csv = (
+                        children_df
+                        .to_csv(
+                            index=False
+                        )
+                        .encode(
+                            "utf-8-sig"
+                        )
+                    )
+
+
+                    st.download_button(
+                        label="Uşaqlar CSV yüklə",
+                        data=children_csv,
+                        file_name=(
+                            "junior_coaching_children.csv"
                         ),
                         mime="text/csv",
                     )
@@ -426,6 +689,9 @@ if not st.session_state.conversation_finished:
                         user_text=user_text,
                         lead=st.session_state.lead,
                         faq_min_score=0.25,
+                        history=(
+                            st.session_state.messages[:-1]
+                        ),
                     )
                 )
 
@@ -489,72 +755,30 @@ if not st.session_state.conversation_finished:
 
 
             # ---------------------------------------------
-            # CALL REQUESTED
+            # CALL REQUESTED / ESCALATED
+            #
+            # Hər iki halda lead bazaya yazılır.
+            # Əvvəllər yalnız CALL_REQUESTED saxlanılırdı,
+            # ona görə eskalasiya olunmuş müraciətlər itirdi.
             # ---------------------------------------------
 
             if (
                 st.session_state.lead.get(
                     "status"
                 )
-                == "CALL_REQUESTED"
+                in (
+                    "CALL_REQUESTED",
+                    "ESCALATED",
+                    "NO_CONTACT",
+                )
             ):
 
-                if not st.session_state.lead_saved:
-
-                    phone = (
-                        st.session_state.lead.get(
-                            "phone"
-                        )
-                    )
+                confirmation = persist_lead_once(
+                    st.session_state.lead
+                )
 
 
-                    existing_lead = (
-                        bot.find_lead_by_phone(
-                            phone
-                        )
-                    )
-
-
-                    if existing_lead is None:
-
-                        try:
-
-                            lead_id = (
-                                bot.save_lead_to_db(
-                                    st.session_state.lead
-                                )
-                            )
-
-
-                            confirmation = (
-                                "Müraciətiniz sistemdə "
-                                "qeyd edildi. "
-                                f"Müraciət nömrəniz: {lead_id}"
-                            )
-
-                        except Exception as exc:
-
-                            print(
-                                "LEAD SAVE ERROR:",
-                                exc,
-                            )
-
-                            confirmation = (
-                                "Müraciət məlumatlarınız "
-                                "toplandı, lakin sistemdə "
-                                "saxlanarkən texniki problem yarandı."
-                            )
-
-                    else:
-
-                        confirmation = (
-                            "Bu telefon nömrəsi ilə artıq "
-                            f"{existing_lead['id']} nömrəli "
-                            "müraciət mövcuddur. "
-                            "Məlumatınız komanda tərəfindən "
-                            "nəzərə alınacaq."
-                        )
-
+                if confirmation:
 
                     st.session_state.messages.append(
                         {
@@ -572,23 +796,6 @@ if not st.session_state.conversation_finished:
                             confirmation
                         )
 
-
-                    st.session_state.lead_saved = True
-
-
-                st.session_state.conversation_finished = True
-
-
-            # ---------------------------------------------
-            # ESCALATED
-            # ---------------------------------------------
-
-            elif (
-                st.session_state.lead.get(
-                    "status"
-                )
-                == "ESCALATED"
-            ):
 
                 st.session_state.conversation_finished = True
 
