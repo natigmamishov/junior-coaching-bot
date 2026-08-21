@@ -1,17 +1,18 @@
 """
-Junior Coaching — Conversation Engine V6.1
+Junior Coaching — Conversation Engine V7
 
-Əsas prinsiplər:
-1. İstifadəçinin bütün mesajı analiz olunur.
-2. Bir mesajdan bir neçə məlumat eyni anda çıxarıla bilər.
-3. Bir mesajda bir neçə sual varsa ayrıca emal edilir.
-4. Əvvəl verilmiş məlumat təkrar soruşulmur.
-5. İstifadəçi məlumatı düzəldirsə state yenilənir.
-6. İstifadəçi arada sual verirsə əvvəl suala cavab verilir.
-7. Hər turn-də maksimum 1 flow sualı verilir.
-8. FAQ-only istifadəçiyə yumşaq conversation bridge göstərilir.
-9. Salamlaşma təkrar-təkrar edilmir.
-10. SQLite və mövcud Streamlit app ilə uyğunluq saxlanılır.
+V7 əsas məqsədləri
+------------------
+1. Whole-message understanding
+2. Semantic question topics
+3. Multiple questions in one message
+4. Reliable state memory
+5. Explicit corrections / overwrite
+6. Safe multi-child handling
+7. Contextual age extraction
+8. Maximum one flow question per turn
+9. FAQ + state + conversation context together
+10. Existing Streamlit / SQLite compatibility
 """
 
 import os
@@ -38,16 +39,18 @@ from sklearn.metrics.pairwise import cosine_similarity
 # 0. PATHS
 # =========================================================
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(
+    os.path.abspath(__file__)
+)
 
 DATASET_PATH = os.path.join(
     BASE_DIR,
-    "Junior_Coaching_sesli_AI_FAQ.txt"
+    "Junior_Coaching_sesli_AI_FAQ.txt",
 )
 
 DB_PATH = os.path.join(
     BASE_DIR,
-    "junior_coaching.db"
+    "junior_coaching.db",
 )
 
 
@@ -58,11 +61,13 @@ DB_PATH = os.path.join(
 load_dotenv(
     os.path.join(
         BASE_DIR,
-        ".env"
+        ".env",
     )
 )
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY = os.getenv(
+    "OPENAI_API_KEY"
+)
 
 client: Optional[OpenAI] = None
 
@@ -113,10 +118,7 @@ def normalize_text(text: str) -> str:
 def normalize_for_search(text: str) -> str:
 
     text = normalize_text(text)
-
-    text = text.translate(
-        AZ_TRANSLATION
-    )
+    text = text.translate(AZ_TRANSLATION)
 
     text = re.sub(
         r"[^\w\s?]",
@@ -132,7 +134,7 @@ def normalize_for_search(text: str) -> str:
 
 
 # =========================================================
-# 3. BASIC HELPERS
+# 3. PHONE
 # =========================================================
 
 def normalize_phone(text: str) -> Optional[str]:
@@ -140,7 +142,7 @@ def normalize_phone(text: str) -> Optional[str]:
     digits = re.sub(
         r"\D",
         "",
-        str(text)
+        str(text),
     )
 
     if (
@@ -158,31 +160,128 @@ def normalize_phone(text: str) -> Optional[str]:
     return None
 
 
-def extract_all_ages(text: str) -> List[int]:
+# =========================================================
+# 4. CONTEXTUAL AGE EXTRACTION
+# =========================================================
 
-    values = re.findall(
-        r"\b\d{1,2}\b",
-        str(text)
+def extract_contextual_ages(
+    text: str,
+) -> List[int]:
+
+    """
+    Telefon və saat rəqəmlərini yaş kimi götürmür.
+
+    Qəbul edir:
+        14 yaş
+        14 yaşı var
+        14 yaşlı
+        13 və 15 yaşında
+        uşaqlarım 12 və 16 yaşındadır
+
+    Qəbul ETMİR:
+        050 123 45 67
+        14:00-16:00
+    """
+
+    normalized = normalize_for_search(
+        text
     )
 
-    result = []
+    ages: List[int] = []
 
-    for value in values:
+    # 14 yaş / 14 yaşı / 14 yaşlı / 14 yaşında
+    patterns = [
+        r"\b(\d{1,2})\s*yas\b",
+        r"\b(\d{1,2})\s*yasi\b",
+        r"\b(\d{1,2})\s*yasli\b",
+        r"\b(\d{1,2})\s*yasinda\b",
+    ]
 
-        number = int(value)
+    for pattern in patterns:
 
-        if (
-            1 <= number <= 99
-            and number not in result
+        for value in re.findall(
+            pattern,
+            normalized,
         ):
-            result.append(number)
 
-    return result
+            age = int(value)
+
+            if (
+                5 <= age <= 25
+                and age not in ages
+            ):
+                ages.append(age)
+
+    # 13 və 15 yaşında
+    pair_patterns = [
+        r"\b(\d{1,2})\s*(?:ve|və|,)\s*(\d{1,2})\s*yas",
+        r"\b(\d{1,2})\s*(?:ve|və|,)\s*(\d{1,2})\s*yasinda",
+    ]
+
+    for pattern in pair_patterns:
+
+        match = re.search(
+            pattern,
+            normalized,
+        )
+
+        if match:
+
+            for value in match.groups():
+
+                age = int(value)
+
+                if (
+                    5 <= age <= 25
+                    and age not in ages
+                ):
+                    ages.append(age)
+
+    return ages
 
 
-def is_greeting(text: str) -> bool:
+def extract_single_age_if_current_field(
+    text: str,
+) -> Optional[int]:
 
-    value = normalize_for_search(text)
+    """
+    Bot konkret yaş soruşubsa user sadəcə:
+        14
+        12 tamam olacaq
+    deyə bilər.
+    """
+
+    normalized = normalize_for_search(
+        text
+    )
+
+    numbers = re.findall(
+        r"\b\d{1,2}\b",
+        normalized,
+    )
+
+    if len(numbers) != 1:
+        return None
+
+    value = int(numbers[0])
+
+    if 5 <= value <= 25:
+        return value
+
+    return None
+
+
+# =========================================================
+# 5. GREETING
+# =========================================================
+
+def is_greeting(
+    text: str,
+) -> bool:
+
+    value = normalize_for_search(
+        text
+    )
 
     return value in {
         "salam",
@@ -199,27 +298,26 @@ def is_greeting(text: str) -> bool:
 
 
 # =========================================================
-# 4. NAME CLEANING
+# 6. NAME CLEANING
 # =========================================================
 
 NON_NAME_TOKENS = {
     "men",
     "mene",
-    "mən",
-    "mənə",
     "anasi",
     "anasiyam",
-    "atasiyam",
     "atasi",
+    "atasiyam",
+    "valideyn",
     "valideynem",
     "valideyniyem",
     "oglum",
     "qizim",
     "usaq",
-    "usaqdir",
     "ovladim",
     "dedim",
     "deyirem",
+    "demisdim",
     "yuxarida",
     "salam",
     "sagol",
@@ -227,15 +325,15 @@ NON_NAME_TOKENS = {
     "tesekkur",
     "tesekkurler",
     "adim",
-    "adım",
     "adi",
-    "adı",
+    "mən",
+    "mənə",
 }
 
 
-def remove_honorific(text: str) -> str:
-
-    words = text.strip().split()
+def remove_honorific(
+    text: str,
+) -> str:
 
     blocked = {
         "bey",
@@ -248,11 +346,11 @@ def remove_honorific(text: str) -> str:
 
     result = []
 
-    for word in words:
+    for word in text.strip().split():
 
-        normalized = normalize_for_search(word)
-
-        if normalized not in {
+        if normalize_for_search(
+            word
+        ) not in {
             normalize_for_search(x)
             for x in blocked
         }:
@@ -261,21 +359,25 @@ def remove_honorific(text: str) -> str:
     return " ".join(result)
 
 
-def remove_name_suffix(word: str) -> str:
+def remove_name_suffix(
+    word: str,
+) -> str:
 
     if not word:
         return word
 
-    normalized = normalize_for_search(word)
+    normalized = normalize_for_search(
+        word
+    )
 
-    suffixes = [
+    for suffix in [
         "dir",
         "dur",
-    ]
+    ]:
 
-    for suffix in suffixes:
-
-        if normalized.endswith(suffix):
+        if normalized.endswith(
+            suffix
+        ):
 
             base_length = (
                 len(word)
@@ -283,18 +385,21 @@ def remove_name_suffix(word: str) -> str:
             )
 
             if base_length >= 4:
-
                 return word[:base_length]
 
     return word
 
 
-def clean_name(value: str) -> Optional[str]:
+def clean_name(
+    value: str,
+) -> Optional[str]:
 
     if not value:
         return None
 
-    value = remove_honorific(value)
+    value = remove_honorific(
+        value
+    )
 
     value = re.sub(
         r"[.,!?+():;]",
@@ -305,29 +410,33 @@ def clean_name(value: str) -> Optional[str]:
     if not value:
         return None
 
-    result_words = []
+    words = []
 
     for word in value.split():
 
-        normalized_word = normalize_for_search(word)
+        normalized_word = normalize_for_search(
+            word
+        )
 
-        if normalized_word in {
-            normalize_for_search(x)
-            for x in NON_NAME_TOKENS
-        }:
+        if normalized_word in NON_NAME_TOKENS:
             continue
 
-        cleaned = remove_name_suffix(word)
+        cleaned = remove_name_suffix(
+            word
+        )
 
         if cleaned:
-            result_words.append(cleaned)
+            words.append(cleaned)
 
-    if not result_words:
+    if not words:
         return None
 
-    result_words = result_words[:2]
+    # Valideyn adının 5 sözə çevrilməsinin qarşısı
+    words = words[:2]
 
-    result = " ".join(result_words)
+    result = " ".join(
+        words
+    )
 
     if not re.fullmatch(
         r"[A-Za-zƏəÖöÜüĞğÇçŞşİı\- ]+",
@@ -339,7 +448,7 @@ def clean_name(value: str) -> Optional[str]:
 
 
 def deterministic_parent_name_extract(
-    text: str
+    text: str,
 ) -> Optional[str]:
 
     patterns = [
@@ -347,8 +456,6 @@ def deterministic_parent_name_extract(
         r"(?i)\bmenim\s+adim\s+([A-Za-zƏəÖöÜüĞğÇçŞşİı\-]+)",
         r"(?i)\badım\s+([A-Za-zƏəÖöÜüĞğÇçŞşİı\-]+)",
         r"(?i)\badim\s+([A-Za-zƏəÖöÜüĞğÇçŞşİı\-]+)",
-        r"(?i)\bmən\s+([A-Za-zƏəÖöÜüĞğÇçŞşİı\-]+)[əa]m\b",
-        r"(?i)\bmen\s+([A-Za-zƏəÖöÜüĞğÇçŞşİı\-]+)[ae]m\b",
     ]
 
     for pattern in patterns:
@@ -368,10 +475,12 @@ def deterministic_parent_name_extract(
 
 
 # =========================================================
-# 5. AZERBAIJANI NAME SUFFIX HELPERS
+# 7. AZERBAIJANI NAME SUFFIX
 # =========================================================
 
-def get_last_vowel(word: str) -> Optional[str]:
+def get_last_vowel(
+    word: str,
+) -> Optional[str]:
 
     vowels = "aıoueəiöü"
 
@@ -385,9 +494,13 @@ def get_last_vowel(word: str) -> Optional[str]:
     return None
 
 
-def get_genitive_suffix(word: str) -> str:
+def get_genitive_suffix(
+    word: str,
+) -> str:
 
-    vowel = get_last_vowel(word)
+    vowel = get_last_vowel(
+        word
+    )
 
     if vowel in ["a", "ı"]:
         return "ın"
@@ -404,12 +517,16 @@ def get_genitive_suffix(word: str) -> str:
     return "ın"
 
 
-def child_genitive(name: str) -> str:
+def child_genitive(
+    name: str,
+) -> str:
 
     if not name:
         return "övladınızın"
 
-    suffix = get_genitive_suffix(name)
+    suffix = get_genitive_suffix(
+        name
+    )
 
     if name[-1].lower() in "aıoueəiöü":
 
@@ -426,7 +543,7 @@ def child_genitive(name: str) -> str:
 
 
 # =========================================================
-# 6. LEAD STRUCTURE
+# 8. LEAD / CHILD STRUCTURE
 # =========================================================
 
 def create_empty_child() -> dict:
@@ -442,13 +559,14 @@ def create_empty_child() -> dict:
 
 
 def create_empty_lead(
-    source: str = "CLI"
+    source: str = "CLI",
 ) -> dict:
 
     return {
         "parent_name": None,
         "parent_title": None,
 
+        # backward compatibility
         "child_name": None,
         "child_age": None,
         "main_concern": None,
@@ -457,12 +575,14 @@ def create_empty_lead(
         "concern_duration": None,
         "concern_onset": None,
 
+        # V7
         "children": [
             create_empty_child()
         ],
 
-        "active_child_index": 0,
+        "declared_child_count": 1,
         "multiple_children": False,
+        "active_child_index": 0,
 
         "phone": None,
         "preferred_call_time": None,
@@ -470,26 +590,25 @@ def create_empty_lead(
         "source": source,
         "status": "NEW",
 
+        "_greeted": False,
+        "_flow_started": False,
+
         "_last_intent": None,
         "_last_confidence": None,
         "_last_faq_score": None,
-
-        "_greeted": False,
-        "_flow_started": False,
-        "_last_answer_topic": None,
-        "_repeat_topic_count": 0,
     }
 
 
 def ensure_lead_structure(
-    lead: dict
+    lead: dict,
 ):
 
-    if "children" not in lead:
-
-        lead["children"] = [
+    lead.setdefault(
+        "children",
+        [
             create_empty_child()
         ]
+    )
 
     if not lead["children"]:
 
@@ -498,49 +617,49 @@ def ensure_lead_structure(
         ]
 
     lead.setdefault(
-        "active_child_index",
-        0
+        "declared_child_count",
+        1,
     )
 
     lead.setdefault(
         "multiple_children",
-        False
+        False,
+    )
+
+    lead.setdefault(
+        "active_child_index",
+        0,
     )
 
     lead.setdefault(
         "_greeted",
-        False
+        False,
     )
 
     lead.setdefault(
         "_flow_started",
-        False
-    )
-
-    lead.setdefault(
-        "_last_answer_topic",
-        None
-    )
-
-    lead.setdefault(
-        "_repeat_topic_count",
-        0
+        False,
     )
 
 
 def get_active_child(
-    lead: dict
+    lead: dict,
 ) -> dict:
 
-    ensure_lead_structure(lead)
+    ensure_lead_structure(
+        lead
+    )
 
     index = lead.get(
         "active_child_index",
-        0
+        0,
     )
 
-    if index >= len(
-        lead["children"]
+    if (
+        index < 0
+        or index >= len(
+            lead["children"]
+        )
     ):
 
         index = 0
@@ -555,22 +674,32 @@ def get_active_child(
 
 
 def sync_flat_fields(
-    lead: dict
+    lead: dict,
 ):
 
-    ensure_lead_structure(lead)
+    ensure_lead_structure(
+        lead
+    )
 
-    first = lead["children"][0]
+    first = lead[
+        "children"
+    ][0]
 
-    lead["child_name"] = first.get(
+    lead[
+        "child_name"
+    ] = first.get(
         "name"
     )
 
-    lead["child_age"] = first.get(
+    lead[
+        "child_age"
+    ] = first.get(
         "age"
     )
 
-    lead["main_concern"] = first.get(
+    lead[
+        "main_concern"
+    ] = first.get(
         "main_concern"
     )
 
@@ -578,7 +707,7 @@ def sync_flat_fields(
         "needs_concern_followup"
     ] = first.get(
         "needs_concern_followup",
-        False
+        False,
     )
 
     lead[
@@ -595,11 +724,158 @@ def sync_flat_fields(
 
 
 # =========================================================
-# 7. TITLE
+# 9. CHILD COUNT — IMPORTANT V7 FIX
+# =========================================================
+
+def detect_explicit_child_count(
+    text: str,
+) -> Optional[int]:
+
+    """
+    Yalnız explicit uşaq sayını qəbul edir.
+
+    "050 123 45 67 + övladım" artıq multi-child yaratmır.
+    """
+
+    value = normalize_for_search(
+        text
+    )
+
+    # 2-ci övlad yoxdur / bir oğlum var
+    one_child_patterns = [
+        "bir oglum var",
+        "bir qizim var",
+        "bir usagim var",
+        "bir ovladim var",
+        "tek usagim var",
+        "tek ovladim var",
+        "2 ci ovlad yoxdur",
+        "ikinci ovlad yoxdur",
+        "iki usaq deyil",
+    ]
+
+    if any(
+        pattern in value
+        for pattern in one_child_patterns
+    ):
+        return 1
+
+    # iki uşağım / 2 uşağım
+    two_child_patterns = [
+        "iki usagim",
+        "iki ovladim",
+        "2 usagim",
+        "2 ovladim",
+        "2 usaqdir",
+        "iki usaqdir",
+        "iki usaq var",
+        "2 usaq var",
+    ]
+
+    if any(
+        pattern in value
+        for pattern in two_child_patterns
+    ):
+        return 2
+
+    # 3 uşağım və s.
+    match = re.search(
+        r"\b([2-5])\s*(?:usaq|ovlad)",
+        value,
+    )
+
+    if match:
+
+        return int(
+            match.group(1)
+        )
+
+    # 13 və 15 yaşında iki uşağım var
+    ages = extract_contextual_ages(
+        text
+    )
+
+    if (
+        len(ages) >= 2
+        and any(
+            marker in value
+            for marker in [
+                "iki usaq",
+                "2 usaq",
+                "iki ovlad",
+                "2 ovlad",
+            ]
+        )
+    ):
+        return len(ages)
+
+    return None
+
+
+def set_child_count(
+    lead: dict,
+    count: int,
+):
+
+    ensure_lead_structure(
+        lead
+    )
+
+    count = max(
+        1,
+        min(
+            int(count),
+            5,
+        )
+    )
+
+    lead[
+        "declared_child_count"
+    ] = count
+
+    lead[
+        "multiple_children"
+    ] = count > 1
+
+    if count == 1:
+
+        lead["children"] = [
+            lead["children"][0]
+        ]
+
+        lead[
+            "active_child_index"
+        ] = 0
+
+    else:
+
+        while len(
+            lead["children"]
+        ) < count:
+
+            lead["children"].append(
+                create_empty_child()
+            )
+
+        if len(
+            lead["children"]
+        ) > count:
+
+            lead["children"] = (
+                lead["children"][:count]
+            )
+
+    sync_flat_fields(
+        lead
+    )
+
+
+# =========================================================
+# 10. PARENT TITLE
 # =========================================================
 
 def infer_parent_title_with_llm(
-    parent_name: str
+    parent_name: str,
 ) -> str:
 
     if (
@@ -618,14 +894,14 @@ def infer_parent_title_with_llm(
                 {
                     "role": "system",
                     "content": """
-Azərbaycan adına əsasən müraciət formasını müəyyən et.
+Azərbaycan adına əsasən uyğun müraciət formasını seç.
 
-Yalnız:
+Yalnız bunlardan birini qaytar:
 xanım
 bəy
 neutral
 
-Əmin deyilsənsə neutral seç.
+Əmin deyilsənsə neutral.
 """
                 },
                 {
@@ -664,26 +940,27 @@ neutral
             response.choices[0].message.content
         )
 
-        title = result.get("title")
-
-        if title in [
+        if result["title"] in [
             "xanım",
             "bəy",
         ]:
-            return title
+
+            return result[
+                "title"
+            ]
 
     except Exception as exc:
 
         print(
             "TITLE ERROR:",
-            exc
+            exc,
         )
 
     return ""
 
 
 def get_parent_display_name(
-    lead: dict
+    lead: dict,
 ) -> str:
 
     name = lead.get(
@@ -698,16 +975,13 @@ def get_parent_display_name(
         return ""
 
     if title:
-
-        return (
-            f"{name} {title}"
-        )
+        return f"{name} {title}"
 
     return name
 
 
 # =========================================================
-# 8. FAQ INDEX
+# 11. FAQ INDEX
 # =========================================================
 
 def build_faq_index():
@@ -765,7 +1039,7 @@ def build_faq_index():
     if not pairs:
 
         raise ValueError(
-            "FAQ faylında sual-cavab tapılmadı."
+            "FAQ faylında Sual / Agent cütləri tapılmadı."
         )
 
     questions = [
@@ -784,7 +1058,6 @@ def build_faq_index():
     ]
 
     vectorizer = FeatureUnion([
-
         (
             "word",
             TfidfVectorizer(
@@ -792,9 +1065,8 @@ def build_faq_index():
                 ngram_range=(1, 2),
                 sublinear_tf=True,
                 max_features=60000,
-            )
+            ),
         ),
-
         (
             "char",
             TfidfVectorizer(
@@ -802,9 +1074,8 @@ def build_faq_index():
                 ngram_range=(3, 5),
                 sublinear_tf=True,
                 max_features=80000,
-            )
+            ),
         ),
-
     ])
 
     matrix = vectorizer.fit_transform(
@@ -829,8 +1100,8 @@ def build_faq_index():
 
 def retrieve_faq_candidates(
     query: str,
-    k: int = 5,
-) -> List[Dict[str, Any]]:
+    k: int = 7,
+):
 
     normalized_query = normalize_for_search(
         query
@@ -864,11 +1135,212 @@ def retrieve_faq_candidates(
 
 
 # =========================================================
-# 9. SEMANTIC FAQ SELECTION
+# 12. CANONICAL QUESTION TOPICS
+# =========================================================
+
+QUESTION_TOPICS = [
+    "meeting_location",
+    "meeting_day",
+    "meeting_frequency",
+    "meeting_duration",
+    "parent_call_duration",
+    "child_intro_call",
+    "missed_session",
+    "one_time_session",
+    "price",
+    "program_info",
+    "program_age",
+    "child_refusal",
+    "language",
+    "registration",
+    "other",
+]
+
+
+def deterministic_question_topic(
+    question: str,
+) -> Optional[str]:
+
+    value = normalize_for_search(
+        question
+    )
+
+    # LOCATION MUST OVERRIDE "keçirilir"
+    if any(
+        marker in value
+        for marker in [
+            "harada",
+            "hardadir",
+            "hardadi",
+            "unvan",
+            "adres",
+            "mekan",
+            "erazide",
+            "hansi erazi",
+            "yerlesir",
+            "nece gele",
+        ]
+    ):
+        return "meeting_location"
+
+    if any(
+        marker in value
+        for marker in [
+            "hansi gun",
+            "ne vaxt",
+            "bazar gunu",
+            "heftenin hansi",
+            "gunleri olur",
+        ]
+    ):
+        return "meeting_day"
+
+    if any(
+        marker in value
+        for marker in [
+            "ayda nece",
+            "heftede nece",
+            "nece defe",
+            "tezliyi",
+        ]
+    ):
+        return "meeting_frequency"
+
+    if (
+        any(
+            marker in value
+            for marker in [
+                "telefon zengi",
+                "valideynle zeng",
+                "ilkin zeng",
+                "tanisliq zengi",
+            ]
+        )
+        and any(
+            marker in value
+            for marker in [
+                "nece deqiqe",
+                "ne qeder cekir",
+                "muddet",
+                "davam edir",
+            ]
+        )
+    ):
+        return "parent_call_duration"
+
+    if (
+        any(
+            marker in value
+            for marker in [
+                "qrup gorusu",
+                "gorus",
+                "sessiya",
+            ]
+        )
+        and any(
+            marker in value
+            for marker in [
+                "nece saat",
+                "ne qeder davam",
+                "muddet",
+            ]
+        )
+    ):
+        return "meeting_duration"
+
+    if any(
+        marker in value
+        for marker in [
+            "gele bilmediyimiz",
+            "buraxdigimiz",
+            "buraxilan gorus",
+            "evez etmek",
+            "evezlenir",
+            "qacirdigimiz",
+        ]
+    ):
+        return "missed_session"
+
+    if any(
+        marker in value
+        for marker in [
+            "bir defe",
+            "bir goruse",
+            "yalniz bir gorus",
+            "tek gorus",
+        ]
+    ):
+        return "one_time_session"
+
+    if any(
+        marker in value
+        for marker in [
+            "qiymet",
+            "odenis",
+            "budce",
+            "ne qederdir",
+            "texmini qiymet",
+        ]
+    ):
+        return "price"
+
+    if any(
+        marker in value
+        for marker in [
+            "gelmek istemese",
+            "istirak etmek istemese",
+            "usaq istemir",
+            "ovladim istemir",
+            "proqrama gelmek istemir",
+        ]
+    ):
+        return "child_refusal"
+
+    if any(
+        marker in value
+        for marker in [
+            "rus dili",
+            "rus dilli",
+            "ingilis dili",
+            "dilinde",
+            "hansi dil",
+        ]
+    ):
+        return "language"
+
+    if any(
+        marker in value
+        for marker in [
+            "nece yas",
+            "yasdan",
+            "yas qrupu",
+            "12 18",
+        ]
+    ):
+        return "program_age"
+
+    if any(
+        marker in value
+        for marker in [
+            "proqram haqqinda",
+            "proqram nedir",
+            "melumat ver",
+            "etrafli melumat",
+            "ne edir",
+        ]
+    ):
+        return "program_info"
+
+    return None
+
+
+# =========================================================
+# 13. FAQ SELECTION WITH TOPIC
 # =========================================================
 
 def select_best_faq_with_llm(
     question: str,
+    topic: str,
     candidates: List[Dict[str, Any]],
 ):
 
@@ -879,7 +1351,7 @@ def select_best_faq_with_llm(
 
         best = candidates[0]
 
-        if best["score"] >= 0.18:
+        if best["score"] >= 0.22:
             return best
 
         return None
@@ -887,10 +1359,10 @@ def select_best_faq_with_llm(
     candidate_text = "\n\n".join([
         (
             f"ID={i}\n"
-            f"Sual: {item['question']}\n"
-            f"Cavab: {item['answer']}"
+            f"Sual: {candidate['question']}\n"
+            f"Cavab: {candidate['answer']}"
         )
-        for i, item in enumerate(
+        for i, candidate in enumerate(
             candidates
         )
     ])
@@ -905,21 +1377,33 @@ def select_best_faq_with_llm(
                 {
                     "role": "system",
                     "content": """
-İstifadəçinin sualına semantik olaraq ən uyğun FAQ-nı seç.
+FAQ seçicisən.
 
-ÇOX VACİB:
-- Açar sözə deyil, mənaya bax.
-- "telefon zəngi neçə dəqiqədir?" ilə "proqram neçə aydır?" fərqlidir.
-- "görüş harada keçirilir?" ilə "görüş nə vaxt keçirilir?" fərqlidir.
-- "buraxılan görüş əvəzlənir?" ilə "bir dəfəlik görüşə gəlmək olar?" fərqlidir.
-- Heç biri dəqiq uyğun deyilsə -1 qaytar.
+İstifadəçi sualının mənasına uyğun FAQ seç.
+
+Canonical topic də verilib və ona ciddi əməl et.
+
+Xüsusilə:
+meeting_location = ÜNVAN / MƏKAN
+meeting_day = hansı gün / nə vaxt
+meeting_duration = qrup görüşünün neçə saat olması
+parent_call_duration = valideynlə ilkin telefon zənginin müddəti
+missed_session = buraxılmış görüşün əvəzlənməsi
+one_time_session = yalnız bir görüşə gəlmək
+price = qiymət / ödəniş
+
+"harada keçirilir?" sualına "bazar günü keçirilir"
+və ya "interaktiv keçirilir" cavabını seçmə.
+
+Uyğun FAQ yoxdursa selected_id=-1.
 """
                 },
                 {
                     "role": "user",
                     "content": (
-                        f"İstifadəçi sualı:\n{question}\n\n"
-                        f"FAQ namizədləri:\n{candidate_text}"
+                        f"TOPIC: {topic}\n\n"
+                        f"USER QUESTION:\n{question}\n\n"
+                        f"CANDIDATES:\n{candidate_text}"
                     ),
                 },
             ],
@@ -949,18 +1433,18 @@ def select_best_faq_with_llm(
             },
         )
 
-        result = json.loads(
+        data = json.loads(
             response.choices[0].message.content
         )
 
-        selected_id = result.get(
+        selected_id = data.get(
             "selected_id",
-            -1
+            -1,
         )
 
-        confidence = result.get(
+        confidence = data.get(
             "confidence",
-            0
+            0,
         )
 
         if (
@@ -976,129 +1460,53 @@ def select_best_faq_with_llm(
 
         print(
             "FAQ SELECT ERROR:",
-            exc
+            exc,
         )
 
     best = candidates[0]
 
-    if best["score"] >= 0.25:
+    if best["score"] >= 0.30:
         return best
 
     return None
 
 
 # =========================================================
-# 10. SPECIAL QUESTIONS
+# 14. SPECIAL DETERMINISTIC ANSWERS
 # =========================================================
 
+LOCATION_ANSWER = (
+    "Görüşlər Süleyman Sani Axundov küçəsində yerləşən "
+    "ADAS Plaza-da, ELİT T/M yaxınlığında keçirilir."
+)
+
+
 def is_permission_to_ask(
-    text: str
+    text: str,
 ) -> bool:
 
     value = normalize_for_search(
         text
     )
-
-    patterns = [
-        "bir sual vere bilerem",
-        "bir sual verim",
-        "sual vere bilerem",
-        "sizden bir sey sorusum",
-        "bir sey sorusa bilerem",
-    ]
 
     return any(
         pattern in value
-        for pattern in patterns
+        for pattern in [
+            "bir sual vere bilerem",
+            "bir sual verim",
+            "sual vere bilerem",
+            "bir sey sorusa bilerem",
+            "sizden bir sey sorusum",
+        ]
     )
 
 
-def is_child_presence_question(
-    text: str
-) -> bool:
+# =========================================================
+# 15. MEMORY / STATE QUESTIONS
+# =========================================================
 
-    value = normalize_for_search(
-        text
-    )
-
-    return (
-        any(
-            x in value
-            for x in [
-                "usaq",
-                "ovlad",
-                "oglum",
-                "qizim",
-            ]
-        )
-        and any(
-            x in value
-            for x in [
-                "yanimda",
-                "olmalidir",
-                "gelmelidir",
-                "istirak",
-                "zengde",
-            ]
-        )
-    )
-
-
-def is_contact_here_question(
-    text: str
-) -> bool:
-
-    value = normalize_for_search(
-        text
-    )
-
-    return (
-        any(
-            x in value
-            for x in [
-                "burdan",
-                "buradan",
-                "burda",
-                "burada",
-            ]
-        )
-        and any(
-            x in value
-            for x in [
-                "elaqe",
-                "danismaq",
-                "yazismaq",
-                "mumkundur",
-                "olar",
-            ]
-        )
-    )
-
-
-def is_bot_question(
-    text: str
-) -> bool:
-
-    value = normalize_for_search(
-        text
-    )
-
-    patterns = [
-        "siz botsuz",
-        "sen botsan",
-        "kimle danisiram",
-        "siz kimsiniz",
-        "kim cavab verir",
-    ]
-
-    return any(
-        pattern in value
-        for pattern in patterns
-    )
-
-
-def is_state_question(
-    text: str
+def detect_state_question(
+    text: str,
 ) -> Optional[str]:
 
     value = normalize_for_search(
@@ -1110,8 +1518,8 @@ def is_state_question(
         for x in [
             "adimi qeyd etdiniz",
             "adimi yazdiniz",
-            "adimi goturdunuz",
             "menim adim ne idi",
+            "adimi goturdunuz",
         ]
     ):
         return "parent_name"
@@ -1119,38 +1527,198 @@ def is_state_question(
     if any(
         x in value
         for x in [
-            "usaqin adini qeyd etdiniz",
-            "ovladimin adini qeyd etdiniz",
             "usaqin adi ne idi",
+            "ovladimin adi ne idi",
+            "usaqin adini qeyd",
         ]
     ):
         return "child_name"
 
-    if any(
-        x in value
-        for x in [
-            "yasini qeyd etdiniz",
-            "usaqin yasini qeyd etdiniz",
-            "yasi yadinizdadir",
-        ]
+    if (
+        any(
+            x in value
+            for x in [
+                "nece yasi",
+                "yasi nece",
+                "yasini demisdim",
+                "yasini qeyd",
+            ]
+        )
+        and any(
+            x in value
+            for x in [
+                "usaq",
+                "oglum",
+                "qizim",
+                "ovlad",
+            ]
+        )
     ):
         return "child_age"
 
     if any(
         x in value
         for x in [
-            "nomremi qeyd etdiniz",
-            "telefonumu qeyd etdiniz",
-            "nomremi goturdunuz",
+            "nece ovladim",
+            "nece usagim",
+            "nece usaq",
+            "nece ovlad",
+        ]
+    ):
+        return "child_count"
+
+    if any(
+        x in value
+        for x in [
+            "nomremi qeyd",
+            "telefonumu qeyd",
+            "nomrem ne idi",
         ]
     ):
         return "phone"
+
+    if any(
+        x in value
+        for x in [
+            "zeng vaxtini qeyd",
+            "ne vaxt demisdim",
+            "hansi vaxt demisdim",
+        ]
+    ):
+        return "preferred_call_time"
+
+    return None
+
+
+def answer_state_question(
+    text: str,
+    lead: dict,
+) -> Optional[str]:
+
+    field = detect_state_question(
+        text
+    )
+
+    if field is None:
+        return None
+
+    if field == "parent_name":
+
+        parent = get_parent_display_name(
+            lead
+        )
+
+        if parent:
+
+            return (
+                f"Bəli, adınızı {parent} kimi qeyd etmişəm. 😊"
+            )
+
+        return (
+            "Hələ adınızı qeyd etməmişəm."
+        )
+
+    if field == "child_name":
+
+        child = get_active_child(
+            lead
+        )
+
+        if child.get("name"):
+
+            return (
+                f"Bəli, övladınızın adını "
+                f"{child['name']} kimi qeyd etmişəm."
+            )
+
+        return (
+            "Hələ övladınızın adını qeyd etməmişəm."
+        )
+
+    if field == "child_age":
+
+        child = get_active_child(
+            lead
+        )
+
+        if child.get("age"):
+
+            name = child.get(
+                "name"
+            )
+
+            if name:
+
+                return (
+                    f"Bəli, {child_genitive(name)} "
+                    f"{child['age']} yaşı olduğunu qeyd etmişəm."
+                )
+
+            return (
+                f"Bəli, övladınızın {child['age']} yaşı "
+                "olduğunu qeyd etmişəm."
+            )
+
+        return (
+            "Hələ övladınızın yaşını qeyd etməmişəm."
+        )
+
+    if field == "child_count":
+
+        count = lead.get(
+            "declared_child_count",
+            1,
+        )
+
+        if count == 1:
+
+            return (
+                "Bir övladınız olduğunu qeyd etmişəm."
+            )
+
+        return (
+            f"{count} övladınız olduğunu qeyd etmişəm."
+        )
+
+    if field == "phone":
+
+        phone = lead.get(
+            "phone"
+        )
+
+        if phone:
+
+            return (
+                f"Bəli, telefon nömrənizi {phone} "
+                "kimi qeyd etmişəm."
+            )
+
+        return (
+            "Hələ telefon nömrənizi qeyd etməmişəm."
+        )
+
+    if field == "preferred_call_time":
+
+        call_time = lead.get(
+            "preferred_call_time"
+        )
+
+        if call_time:
+
+            return (
+                f"Bəli, zəng üçün uyğun vaxtı "
+                f"“{call_time}” kimi qeyd etmişəm."
+            )
+
+        return (
+            "Hələ zəng üçün uyğun vaxt qeyd etməmişəm."
+        )
 
     return None
 
 
 # =========================================================
-# 11. WHOLE MESSAGE ANALYSIS
+# 16. CONVERSATION ANALYZER
 # =========================================================
 
 def analyze_message(
@@ -1165,8 +1733,6 @@ def analyze_message(
 
     history = history or []
 
-    compact_history = history[-8:]
-
     state = {
         "parent_name": lead.get(
             "parent_name"
@@ -1176,6 +1742,9 @@ def analyze_message(
         ),
         "children": lead.get(
             "children"
+        ),
+        "declared_child_count": lead.get(
+            "declared_child_count"
         ),
         "phone": lead.get(
             "phone"
@@ -1193,93 +1762,152 @@ def analyze_message(
         return {
             "intent": (
                 "greeting"
-                if is_greeting(user_text)
+                if is_greeting(
+                    user_text
+                )
                 else "field_answer"
             ),
-            "questions": (
-                [user_text]
-                if "?" in user_text
-                else []
-            ),
+            "questions": [],
             "parent_name": "",
             "child_name": "",
             "child_age": 0,
             "main_concern": "",
             "phone": "",
             "preferred_call_time": "",
-            "multiple_children": False,
-            "children_count": 0,
+            "child_count": 0,
             "corrections": [],
             "confidence": 0.0,
         }
 
     system_prompt = """
-Sən Junior Coaching üçün conversation analyzer-sən.
+Sən Junior Coaching Conversation Analyzer-sən.
 
-Sənin vəzifən:
-- cari user mesajını,
-- əvvəlki söhbət tarixçəsini,
-- artıq toplanmış state-i
+Cari mesajı:
+1. əvvəlki conversation history,
+2. hazırkı state
+ilə birlikdə analiz et.
 
-birlikdə nəzərə almaqdır.
+BİR MESAJDA BİRDƏN ÇOX MƏLUMAT VARSA HAMISINI ÇIXAR.
 
-Bir mesajda bir neçə məlumat varsa HAMISINI çıxar.
-Bir mesajda bir neçə sual varsa HAMISINI questions array-də ayrıca yaz.
+BİR MESAJDA BİRDƏN ÇOX SUAL VARSA HAMISINI AYRI questions ELEMENTİ ET.
 
-Məsələn:
-"Görüşlər harada keçirilir və telefon zəngi neçə dəqiqədir?"
+questions elementinin:
+- text
+- topic
+sahələri var.
+
+Topic-lər:
+meeting_location
+meeting_day
+meeting_frequency
+meeting_duration
+parent_call_duration
+child_intro_call
+missed_session
+one_time_session
+price
+program_info
+program_age
+child_refusal
+language
+registration
+other
+
+
+MÜHÜM NÜMUNƏ:
+
+"Görüşlər hansı gün olur və harada keçirilir?"
+
 questions:
 [
-  "Görüşlər harada keçirilir?",
-  "Telefon zəngi neçə dəqiqədir?"
+  {
+    "text": "Görüşlər hansı gün olur?",
+    "topic": "meeting_day"
+  },
+  {
+    "text": "Görüşlər harada keçirilir?",
+    "topic": "meeting_location"
+  }
 ]
 
-Məsələn:
-"Mən Nərgizəm. Oğlum Orxanın 15 yaşı var.
-Özgüvəni zəifdir. Nömrəm 0501234567.
-Sabah 15:00-dan sonra danışa bilərəm."
 
-parent_name=Nərgiz
-child_name=Orxan
-child_age=15
-main_concern=özgüvən
-phone=0501234567
-preferred_call_time=sabah 15:00-dan sonra
+CORRECTION:
 
-ƏSAS QAYDALAR:
+"Tunar yox, Turandır"
+=> correction:
+field=child_name
+value=Turan
+child_index=0
 
-1. "məsuliyyətsizdir", "özgüvəni zəifdir",
-"məqsəd və gələcək", "ünsiyyəti zəifdir",
-"hamısı", "hər biri" complaint deyil.
-Bunlar child main_concern-dir.
+"Səhv yazmışdım, uşağın adı Turandır"
+=> child_name correction.
 
-2. "Aygün mənəm, uşağın adı Ayxandır"
-corrections daxilində:
+"Aygün mənəm, uşağın adı Ayxandır"
+=> iki correction:
 parent_name=Aygün
 child_name=Ayxan
 
-3. "mənə yox, Tunar"
-əgər əvvəl child name müzakirə olunurdusa child_name=Tunar correction.
+"2-ci övlad yoxdur, bir oğlum var"
+=> child_count=1
 
-4. User artıq verilmiş məlumatı düzəldirsə correction qaytar.
 
-5. "Adımı qeyd etdiniz?" FAQ deyil.
-state_question intent istifadə et.
+AD QAYDALARI:
 
-6. "Bir sual verə bilərəm?"
-permission_question intent istifadə et.
+"anasıyam"
+"atasıyam"
+"mənə"
+"mən"
+"övladım"
+ad DEYİL.
 
-7. "anasıyam", "mənə", "atasıyam" ad deyil.
+"Adım Günaydır"
+=> parent_name Günay.
 
-8. İki uşaq varsa multiple_children=true.
+"Oğlum Tunar"
+=> child_name Tunar.
 
-9. Uşaq barədə mənfi xüsusiyyət service complaint deyil.
-Complaint yalnız Junior Coaching xidmətinə narazılıqdır.
 
-10. User eyni anda sual + məlumat verə bilər.
-Həm sualı, həm slotları çıxar.
+YAŞ:
 
-Intent-lər:
+Telefon nömrəsində və saatda olan rəqəmləri yaş kimi götürmə.
+
+050 123 45 67
+=> child_age DEYİL.
+
+14:00
+=> child_age DEYİL.
+
+"14 yaşlı oğlum"
+=> child_age=14.
+
+
+MAIN CONCERN:
+
+özgüvəni zəifdir
+özünə qapanır
+ünsiyyətdə çətinlik çəkir
+məsuliyyətsizdir
+məqsəd və gələcək
+hamısı
+
+bunlar complaint DEYİL.
+Bunlar main_concern-dir.
+
+
+STATE / MEMORY:
+
+"neçə övladım olduğunu demişdim?"
+"oğlumun neçə yaşı olduğunu demişdim?"
+"adımı qeyd etdiniz?"
+
+FAQ DEYİL.
+intent=state_question.
+
+
+İstifadəçi həm məlumat, həm sual verə bilər.
+Hər ikisini çıxar.
+
+Intent:
 greeting
 faq_question
 field_answer
@@ -1287,6 +1915,7 @@ program_interest
 registration_request
 state_question
 permission_question
+correction
 human_agent_request
 complaint
 safety_risk
@@ -1295,14 +1924,14 @@ pause_request
 unrelated
 """
 
-    prompt = f"""
+    user_prompt = f"""
 CURRENT STATE:
 {json.dumps(state, ensure_ascii=False)}
 
 RECENT HISTORY:
-{json.dumps(compact_history, ensure_ascii=False)}
+{json.dumps(history[-10:], ensure_ascii=False)}
 
-CURRENT USER MESSAGE:
+USER:
 {user_text}
 """
 
@@ -1319,7 +1948,7 @@ CURRENT USER MESSAGE:
                 },
                 {
                     "role": "user",
-                    "content": prompt,
+                    "content": user_prompt,
                 },
             ],
 
@@ -1342,6 +1971,7 @@ CURRENT USER MESSAGE:
                                     "registration_request",
                                     "state_question",
                                     "permission_question",
+                                    "correction",
                                     "human_agent_request",
                                     "complaint",
                                     "safety_risk",
@@ -1354,7 +1984,21 @@ CURRENT USER MESSAGE:
                             "questions": {
                                 "type": "array",
                                 "items": {
-                                    "type": "string"
+                                    "type": "object",
+                                    "properties": {
+                                        "text": {
+                                            "type": "string"
+                                        },
+                                        "topic": {
+                                            "type": "string",
+                                            "enum": QUESTION_TOPICS,
+                                        },
+                                    },
+                                    "required": [
+                                        "text",
+                                        "topic",
+                                    ],
+                                    "additionalProperties": False,
                                 },
                             },
 
@@ -1382,11 +2026,7 @@ CURRENT USER MESSAGE:
                                 "type": "string"
                             },
 
-                            "multiple_children": {
-                                "type": "boolean"
-                            },
-
-                            "children_count": {
+                            "child_count": {
                                 "type": "integer"
                             },
 
@@ -1428,8 +2068,7 @@ CURRENT USER MESSAGE:
                             "main_concern",
                             "phone",
                             "preferred_call_time",
-                            "multiple_children",
-                            "children_count",
+                            "child_count",
                             "corrections",
                             "confidence",
                         ],
@@ -1448,58 +2087,56 @@ CURRENT USER MESSAGE:
 
         print(
             "ANALYSIS ERROR:",
-            exc
+            exc,
         )
 
         return {
-            "intent": (
-                "greeting"
-                if is_greeting(user_text)
-                else "field_answer"
-            ),
-            "questions": (
-                [user_text]
-                if "?" in user_text
-                else []
-            ),
+            "intent": "field_answer",
+            "questions": [],
             "parent_name": "",
             "child_name": "",
             "child_age": 0,
             "main_concern": "",
             "phone": "",
             "preferred_call_time": "",
-            "multiple_children": False,
-            "children_count": 0,
+            "child_count": 0,
             "corrections": [],
             "confidence": 0.0,
         }
 
 
 # =========================================================
-# 12. APPLY CORRECTIONS
+# 17. APPLY CORRECTIONS
 # =========================================================
 
 def apply_corrections(
     lead: dict,
     corrections: List[dict],
-):
+) -> List[str]:
 
-    ensure_lead_structure(lead)
+    ensure_lead_structure(
+        lead
+    )
+
+    confirmations = []
 
     for correction in corrections:
 
         field = correction.get(
-            "field"
+            "field",
+            ""
         )
 
-        value = correction.get(
-            "value",
-            ""
+        value = str(
+            correction.get(
+                "value",
+                ""
+            )
         ).strip()
 
         child_index = correction.get(
             "child_index",
-            0
+            0,
         )
 
         if not value:
@@ -1507,7 +2144,9 @@ def apply_corrections(
 
         if field == "parent_name":
 
-            cleaned = clean_name(value)
+            cleaned = clean_name(
+                value
+            )
 
             if cleaned:
 
@@ -1521,24 +2160,16 @@ def apply_corrections(
                     cleaned
                 )
 
-        elif field == "phone":
+                confirmations.append(
+                    f"Adınızı {cleaned} olaraq düzəltdim."
+                )
 
-            phone = normalize_phone(value)
+        elif field == "child_name":
 
-            if phone:
-                lead["phone"] = phone
-
-        elif field == "preferred_call_time":
-
-            lead[
-                "preferred_call_time"
-            ] = value
-
-        elif field in [
-            "child_name",
-            "child_age",
-            "main_concern",
-        ]:
+            child_index = max(
+                0,
+                child_index,
+            )
 
             while len(
                 lead["children"]
@@ -1548,73 +2179,200 @@ def apply_corrections(
                     create_empty_child()
                 )
 
-            child = lead[
-                "children"
-            ][child_index]
+            cleaned = clean_name(
+                value
+            )
 
-            if field == "child_name":
+            if cleaned:
 
-                cleaned = clean_name(value)
+                lead[
+                    "children"
+                ][child_index][
+                    "name"
+                ] = cleaned
 
-                if cleaned:
-                    child[
-                        "name"
-                    ] = cleaned
-
-            elif field == "child_age":
-
-                ages = extract_all_ages(
-                    value
+                confirmations.append(
+                    f"Övladınızın adını {cleaned} olaraq düzəltdim."
                 )
 
-                if ages:
-                    child[
-                        "age"
-                    ] = ages[0]
+        elif field == "child_age":
 
-            elif field == "main_concern":
+            age = extract_single_age_if_current_field(
+                value
+            )
 
-                child[
-                    "main_concern"
-                ] = value
+            if age:
 
-    sync_flat_fields(lead)
+                while len(
+                    lead["children"]
+                ) <= child_index:
+
+                    lead["children"].append(
+                        create_empty_child()
+                    )
+
+                lead[
+                    "children"
+                ][child_index][
+                    "age"
+                ] = age
+
+                confirmations.append(
+                    f"Yaşı {age} olaraq düzəltdim."
+                )
+
+        elif field == "main_concern":
+
+            while len(
+                lead["children"]
+            ) <= child_index:
+
+                lead["children"].append(
+                    create_empty_child()
+                )
+
+            lead[
+                "children"
+            ][child_index][
+                "main_concern"
+            ] = value
+
+            confirmations.append(
+                "Qeyd etdiyiniz əsas ehtiyacı yenilədim."
+            )
+
+        elif field == "phone":
+
+            phone = normalize_phone(
+                value
+            )
+
+            if phone:
+
+                lead[
+                    "phone"
+                ] = phone
+
+                confirmations.append(
+                    "Telefon nömrəsini düzəltdim."
+                )
+
+        elif field == "preferred_call_time":
+
+            lead[
+                "preferred_call_time"
+            ] = value
+
+            confirmations.append(
+                "Zəng üçün uyğun vaxtı yenilədim."
+            )
+
+        elif field == "child_count":
+
+            numbers = re.findall(
+                r"\d+",
+                value,
+            )
+
+            if numbers:
+
+                set_child_count(
+                    lead,
+                    int(numbers[0]),
+                )
+
+    sync_flat_fields(
+        lead
+    )
+
+    return confirmations
 
 
 # =========================================================
-# 13. MERGE EXTRACTED INFO
+# 18. MERGE NEW INFORMATION
 # =========================================================
 
 def merge_analysis(
     lead: dict,
     analysis: dict,
     user_text: str,
-):
+    current_field: Optional[str] = None,
+) -> List[str]:
 
-    ensure_lead_structure(lead)
+    ensure_lead_structure(
+        lead
+    )
 
-    # Corrections first
-    apply_corrections(
+    confirmations = apply_corrections(
         lead,
         analysis.get(
             "corrections",
             []
-        )
+        ),
     )
 
+    # Explicit child count has precedence
+    explicit_count = detect_explicit_child_count(
+        user_text
+    )
+
+    if explicit_count is not None:
+
+        set_child_count(
+            lead,
+            explicit_count,
+        )
+
+        if explicit_count == 1:
+
+            confirmations.append(
+                "Bir övladınız olduğunu nəzərə aldım."
+            )
+
+    elif analysis.get(
+        "child_count",
+        0,
+    ) > 1:
+
+        # LLM cannot create multi child unless wording
+        # is actually explicit enough.
+        normalized_user = normalize_for_search(
+            user_text
+        )
+
+        if any(
+            marker in normalized_user
+            for marker in [
+                "iki usaq",
+                "2 usaq",
+                "iki ovlad",
+                "2 ovlad",
+                "usaqlarim",
+                "ovladlarim",
+            ]
+        ):
+
+            set_child_count(
+                lead,
+                analysis[
+                    "child_count"
+                ],
+            )
+
+    # Parent name
     deterministic_name = (
         deterministic_parent_name_extract(
             user_text
         )
     )
 
-    parent_name = analysis.get(
-        "parent_name",
-        ""
-    ).strip()
-
-    if deterministic_name:
-        parent_name = deterministic_name
+    parent_name = (
+        deterministic_name
+        or analysis.get(
+            "parent_name",
+            ""
+        ).strip()
+    )
 
     if (
         parent_name
@@ -1639,78 +2397,7 @@ def merge_analysis(
                 cleaned
             )
 
-    # Multi child
-    children_count = analysis.get(
-        "children_count",
-        0
-    )
-
-    if (
-        analysis.get(
-            "multiple_children"
-        )
-        and children_count >= 2
-    ):
-
-        lead[
-            "multiple_children"
-        ] = True
-
-        while len(
-            lead["children"]
-        ) < children_count:
-
-            lead["children"].append(
-                create_empty_child()
-            )
-
-    ages = extract_all_ages(
-        user_text
-    )
-
-    normalized_user = normalize_for_search(
-        user_text
-    )
-
-    if (
-        len(ages) >= 2
-        and any(
-            word in normalized_user
-            for word in [
-                "usaq",
-                "ovlad",
-            ]
-        )
-    ):
-
-        lead[
-            "multiple_children"
-        ] = True
-
-        while len(
-            lead["children"]
-        ) < len(ages):
-
-            lead["children"].append(
-                create_empty_child()
-            )
-
-        for i, age in enumerate(
-            ages
-        ):
-
-            if not lead[
-                "children"
-            ][i].get(
-                "age"
-            ):
-
-                lead[
-                    "children"
-                ][i][
-                    "age"
-                ] = age
-
+    # Child
     child = get_active_child(
         lead
     )
@@ -1732,29 +2419,91 @@ def merge_analysis(
         )
 
         if cleaned:
-
             child[
                 "name"
             ] = cleaned
 
-    child_age = analysis.get(
-        "child_age",
-        0
+    # Contextual age only
+    contextual_ages = extract_contextual_ages(
+        user_text
     )
 
-    if (
-        child_age
+    if contextual_ages:
+
+        if (
+            lead.get(
+                "declared_child_count",
+                1,
+            ) > 1
+            and len(
+                contextual_ages
+            ) > 1
+        ):
+
+            for i, age in enumerate(
+                contextual_ages
+            ):
+
+                if i < len(
+                    lead["children"]
+                ):
+
+                    if not lead[
+                        "children"
+                    ][i].get(
+                        "age"
+                    ):
+
+                        lead[
+                            "children"
+                        ][i][
+                            "age"
+                        ] = age
+
+        elif not child.get(
+            "age"
+        ):
+
+            child[
+                "age"
+            ] = contextual_ages[0]
+
+    elif (
+        current_field == "child_age"
         and not child.get(
             "age"
         )
     ):
 
-        if 1 <= child_age <= 99:
+        simple_age = extract_single_age_if_current_field(
+            user_text
+        )
 
-            child[
-                "age"
-            ] = child_age
+        if simple_age:
+            child["age"] = simple_age
 
+    # LLM child_age only if no phone-style ambiguity
+    elif (
+        analysis.get(
+            "child_age",
+            0
+        )
+        and not child.get(
+            "age"
+        )
+        and normalize_phone(
+            user_text
+        ) is None
+    ):
+
+        age = analysis[
+            "child_age"
+        ]
+
+        if 5 <= age <= 25:
+            child["age"] = age
+
+    # Concern
     concern = analysis.get(
         "main_concern",
         ""
@@ -1774,7 +2523,6 @@ def merge_analysis(
         if normalized_concern in {
             "hamisi",
             "her biri",
-            "hamisi",
         }:
 
             concern = (
@@ -1787,9 +2535,7 @@ def merge_analysis(
         ] = concern
 
         if any(
-            word in normalize_for_search(
-                concern
-            )
+            word in normalized_concern
             for word in [
                 "fikirli",
                 "ozune qapan",
@@ -1801,14 +2547,13 @@ def merge_analysis(
                 "needs_concern_followup"
             ] = True
 
-    extracted_phone = analysis.get(
-        "phone",
-        ""
-    )
-
+    # Phone
     phone = (
         normalize_phone(
-            extracted_phone
+            analysis.get(
+                "phone",
+                ""
+            )
         )
         or normalize_phone(
             user_text
@@ -1826,6 +2571,7 @@ def merge_analysis(
             "phone"
         ] = phone
 
+    # Call time
     call_time = analysis.get(
         "preferred_call_time",
         ""
@@ -1838,28 +2584,49 @@ def merge_analysis(
         )
     ):
 
-        lead[
-            "preferred_call_time"
-        ] = call_time
+        normalized_call = normalize_for_search(
+            call_time
+        )
 
-    sync_flat_fields(lead)
+        # tək "sabah" qeyri-dəqiqdir
+        if normalized_call not in {
+            "sabah",
+            "bugun",
+            "bu gun",
+        }:
+
+            lead[
+                "preferred_call_time"
+            ] = call_time
+
+    sync_flat_fields(
+        lead
+    )
+
+    return confirmations
 
 
 # =========================================================
-# 14. NEXT FIELD
+# 19. FLOW
 # =========================================================
 
 def child_is_complete(
-    child: dict
+    child: dict,
 ) -> bool:
 
-    if not child.get("name"):
+    if not child.get(
+        "name"
+    ):
         return False
 
-    if not child.get("age"):
+    if not child.get(
+        "age"
+    ):
         return False
 
-    if not child.get("main_concern"):
+    if not child.get(
+        "main_concern"
+    ):
         return False
 
     if child.get(
@@ -1880,31 +2647,45 @@ def child_is_complete(
 
 
 def advance_child_if_needed(
-    lead: dict
+    lead: dict,
 ):
 
-    ensure_lead_structure(lead)
+    ensure_lead_structure(
+        lead
+    )
+
+    # Only iterate over EXPLICITLY declared children.
+    count = lead.get(
+        "declared_child_count",
+        1,
+    )
+
+    if count <= 1:
+
+        lead[
+            "active_child_index"
+        ] = 0
+
+        return
 
     index = lead.get(
         "active_child_index",
-        0
+        0,
     )
 
-    child = lead[
+    current = lead[
         "children"
     ][index]
 
     if not child_is_complete(
-        child
+        current
     ):
         return
 
-    for i, other_child in enumerate(
-        lead["children"]
-    ):
+    for i in range(count):
 
         if not child_is_complete(
-            other_child
+            lead["children"][i]
         ):
 
             lead[
@@ -1915,10 +2696,12 @@ def advance_child_if_needed(
 
 
 def get_next_missing_field(
-    lead: dict
+    lead: dict,
 ):
 
-    ensure_lead_structure(lead)
+    ensure_lead_structure(
+        lead
+    )
 
     if not lead.get(
         "parent_name"
@@ -1962,21 +2745,27 @@ def get_next_missing_field(
         ):
             return "concern_onset"
 
-    for i, other_child in enumerate(
-        lead["children"]
-    ):
+    # Only explicit additional children
+    count = lead.get(
+        "declared_child_count",
+        1,
+    )
 
-        if not child_is_complete(
-            other_child
-        ):
+    if count > 1:
 
-            lead[
-                "active_child_index"
-            ] = i
+        for i in range(count):
 
-            return get_next_missing_field(
-                lead
-            )
+            if not child_is_complete(
+                lead["children"][i]
+            ):
+
+                lead[
+                    "active_child_index"
+                ] = i
+
+                return get_next_missing_field(
+                    lead
+                )
 
     if not lead.get(
         "phone"
@@ -1991,12 +2780,8 @@ def get_next_missing_field(
     return None
 
 
-# =========================================================
-# 15. NEXT QUESTION
-# =========================================================
-
 def get_next_question(
-    lead: dict
+    lead: dict,
 ) -> str:
 
     field = get_next_missing_field(
@@ -2019,20 +2804,23 @@ def get_next_question(
 
     if field == "child_name":
 
-        if lead.get(
-            "multiple_children"
+        if (
+            lead.get(
+                "declared_child_count",
+                1,
+            ) > 1
         ):
 
-            index = (
+            number = (
                 lead.get(
                     "active_child_index",
-                    0
+                    0,
                 )
                 + 1
             )
 
             return (
-                f"{index}-ci övladınızın adını "
+                f"{number}-ci övladınızın adını "
                 "öyrənə bilərəm?"
             )
 
@@ -2101,17 +2889,9 @@ def get_next_question(
     return ""
 
 
-# =========================================================
-# 16. HAS LEAD INFO
-# =========================================================
-
 def has_any_lead_info(
-    lead: dict
+    lead: dict,
 ) -> bool:
-
-    ensure_lead_structure(
-        lead
-    )
 
     if lead.get(
         "parent_name"
@@ -2144,288 +2924,101 @@ def has_any_lead_info(
 
 
 # =========================================================
-# 17. STATE QUESTIONS
-# =========================================================
-
-def answer_state_question(
-    user_text: str,
-    lead: dict,
-) -> Optional[str]:
-
-    field = is_state_question(
-        user_text
-    )
-
-    if not field:
-        return None
-
-    if field == "parent_name":
-
-        parent = get_parent_display_name(
-            lead
-        )
-
-        if parent:
-
-            return (
-                f"Bəli, adınızı {parent} kimi "
-                "qeyd etmişəm. 😊"
-            )
-
-        return (
-            "Hələ adınızı qeyd etməmişəm."
-        )
-
-    if field == "child_name":
-
-        child = get_active_child(
-            lead
-        )
-
-        name = child.get(
-            "name"
-        )
-
-        if name:
-
-            return (
-                f"Bəli, övladınızın adını "
-                f"{name} kimi qeyd etmişəm."
-            )
-
-        return (
-            "Hələ övladınızın adını qeyd etməmişəm."
-        )
-
-    if field == "child_age":
-
-        child = get_active_child(
-            lead
-        )
-
-        age = child.get(
-            "age"
-        )
-
-        if age:
-
-            return (
-                f"Bəli, övladınızın yaşını "
-                f"{age} olaraq qeyd etmişəm."
-            )
-
-        return (
-            "Hələ övladınızın yaşını qeyd etməmişəm."
-        )
-
-    if field == "phone":
-
-        phone = lead.get(
-            "phone"
-        )
-
-        if phone:
-
-            return (
-                f"Bəli, telefon nömrənizi "
-                f"{phone} kimi qeyd etmişəm."
-            )
-
-        return (
-            "Hələ telefon nömrənizi qeyd etməmişəm."
-        )
-
-    return None
-
-
-# =========================================================
-# 18. ANSWER QUESTIONS
+# 20. ANSWER ONE QUESTION
 # =========================================================
 
 def answer_single_question(
     question: str,
+    topic: str,
     lead: dict,
-    history: Optional[List[dict]] = None,
-) -> str:
+):
 
+    # State is always answered from memory.
     state_answer = answer_state_question(
         question,
         lead,
     )
 
     if state_answer:
-
         return state_answer
 
     if is_permission_to_ask(
         question
     ):
-
         return (
             "Əlbəttə, buyurun 😊"
         )
 
-    if is_child_presence_question(
-        question
-    ):
-
-        return (
-            "İlkin zəng zamanı övladınızın "
-            "iştirakı vacib deyil."
+    deterministic_topic = (
+        deterministic_question_topic(
+            question
         )
+    )
 
-    if is_contact_here_question(
-        question
-    ):
+    if deterministic_topic:
+        topic = deterministic_topic
 
-        return (
-            "Bəli 😊 Buradan müraciətinizi qeyd edə bilərsiniz. "
-            "Məlumatlar tamamlandıqdan sonra Junior Coaching "
-            "komandası sizinlə əlaqə saxlayacaq."
-        )
+    # Important hard guarantee for location
+    if topic == "meeting_location":
 
-    if is_bot_question(
-        question
-    ):
-
-        return (
-            "Mən Junior Coaching proqramı üzrə "
-            "virtual müraciət köməkçisiyəm 😊"
-        )
+        return LOCATION_ANSWER
 
     candidates = retrieve_faq_candidates(
         question,
-        k=5,
+        k=7,
     )
 
     faq = select_best_faq_with_llm(
-        question,
-        candidates,
+        question=question,
+        topic=topic,
+        candidates=candidates,
     )
 
     if faq:
 
         lead[
             "_last_faq_score"
-        ] = faq.get(
+        ] = faq[
             "score"
-        )
+        ]
 
         return faq[
             "answer"
         ]
 
     return (
-        "Bu sualla bağlı məlumat bazasında "
-        "dəqiq cavab tapmadım. "
-        "İstəsəniz bu sualı məsul əməkdaşa "
+        "Bu sualla bağlı məlumat bazasında dəqiq cavab "
+        "tapmadım. İstəsəniz bu sualı məsul əməkdaşa "
         "yönləndirə bilərik."
     )
 
 
-def naturalize_repeated_answer(
-    user_text: str,
-    answer: str,
-    history: Optional[List[dict]] = None,
-) -> str:
-
-    """
-    Eyni mövzuda user ikinci dəfə israr edirsə,
-    eyni FAQ cavabını sözbəsöz təkrar etməməyə çalışır.
-    """
-
-    history = history or []
-
-    if not history:
-        return answer
-
-    recent_assistant_answers = [
-        item.get(
-            "content",
-            ""
-        )
-        for item in history[-6:]
-        if item.get(
-            "role"
-        ) == "assistant"
-    ]
-
-    if answer not in recent_assistant_answers:
-        return answer
-
-    if client is None:
-
-        return (
-            "Sizi başa düşürəm. "
-            + answer
-        )
-
-    try:
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.3,
-
-            messages=[
-                {
-                    "role": "system",
-                    "content": """
-İstifadəçiyə verilən əvvəlki faktiki cavabı dəyişmədən,
-amma eyni cümləni sözbəsöz təkrarlamadan daha təbii follow-up yaz.
-
-Yeni fakt uydurma.
-Qiymət rəqəmi source-da yoxdursa rəqəm uydurma.
-Qısa və empatik ol.
-"""
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"User follow-up:\n{user_text}\n\n"
-                        f"Əvvəlki faktiki cavab:\n{answer}"
-                    ),
-                },
-            ],
-        )
-
-        text = response.choices[
-            0
-        ].message.content.strip()
-
-        if text:
-            return text
-
-    except Exception as exc:
-
-        print(
-            "REPEAT NATURALIZE ERROR:",
-            exc
-        )
-
-    return answer
-
-
-def answer_user_questions(
-    user_text: str,
-    questions: List[str],
+def answer_all_questions(
+    questions: List[dict],
     lead: dict,
-    history: Optional[List[dict]] = None,
 ) -> str:
 
     answers = []
 
-    for question in questions:
+    for item in questions:
 
-        answer = answer_single_question(
-            question,
-            lead,
-            history,
+        question = item.get(
+            "text",
+            ""
+        ).strip()
+
+        topic = item.get(
+            "topic",
+            "other",
         )
 
-        answer = naturalize_repeated_answer(
-            user_text,
-            answer,
-            history,
+        if not question:
+            continue
+
+        answer = answer_single_question(
+            question=question,
+            topic=topic,
+            lead=lead,
         )
 
         if (
@@ -2434,19 +3027,13 @@ def answer_user_questions(
         ):
             answers.append(answer)
 
-    if not answers:
-
-        return (
-            "Bu sualla bağlı dəqiq cavab tapa bilmədim."
-        )
-
     return "\n\n".join(
         answers
     )
 
 
 # =========================================================
-# 19. FALLBACK FIELD SAVE
+# 21. FIELD FALLBACK
 # =========================================================
 
 def save_current_field_fallback(
@@ -2497,22 +3084,20 @@ def save_current_field_fallback(
         )
 
         if name:
-
             child[
                 "name"
             ] = name
 
     elif field == "child_age":
 
-        ages = extract_all_ages(
+        age = extract_single_age_if_current_field(
             value
         )
 
-        if len(ages) == 1:
-
+        if age:
             child[
                 "age"
-            ] = ages[0]
+            ] = age
 
     elif field == "main_concern":
 
@@ -2562,14 +3147,12 @@ def save_current_field_fallback(
         )
 
         if phone:
-
             lead[
                 "phone"
             ] = phone
 
     elif field == "preferred_call_time":
 
-        # Tək "sabah"ı final vaxt saymayaq
         if normalized not in {
             "sabah",
             "bugun",
@@ -2586,11 +3169,11 @@ def save_current_field_fallback(
 
 
 # =========================================================
-# 20. FINAL MESSAGE
+# 22. FINAL MESSAGE
 # =========================================================
 
 def build_final_message(
-    lead: dict
+    lead: dict,
 ) -> str:
 
     parent = get_parent_display_name(
@@ -2601,21 +3184,25 @@ def build_final_message(
         "preferred_call_time"
     )
 
-    result = "Qeydə alındı ✅"
+    result = (
+        "Qeydə alındı ✅"
+    )
 
-    if parent and call_time:
+    if (
+        parent
+        and call_time
+    ):
 
         result += (
-            f"\n\n{parent}, {call_time} "
-            "sizinlə əlaqə saxlanılması üçün "
-            "müraciətinizi qeyd etdim."
+            f"\n\n{parent}, {call_time} sizinlə əlaqə "
+            "saxlanılması üçün müraciətinizi qeyd etdim."
         )
 
     elif call_time:
 
         result += (
-            f"\n\n{call_time} sizinlə əlaqə "
-            "saxlanılması üçün müraciətinizi qeyd etdim."
+            f"\n\n{call_time} sizinlə əlaqə saxlanılması "
+            "üçün müraciətinizi qeyd etdim."
         )
 
     result += (
@@ -2627,7 +3214,7 @@ def build_final_message(
 
 
 # =========================================================
-# 21. MAIN AGENT
+# 23. MAIN AGENT
 # =========================================================
 
 def lead_agent_reply(
@@ -2636,6 +3223,8 @@ def lead_agent_reply(
     faq_min_score: float = 0.18,
     history: Optional[List[dict]] = None,
 ) -> str:
+
+    del faq_min_score
 
     user_text = user_text.strip()
 
@@ -2653,9 +3242,9 @@ def lead_agent_reply(
         "_last_faq_score"
     ] = None
 
-    # =====================================================
-    # 1. Analyze whole message + conversation
-    # =====================================================
+    # ---------------------------------------------
+    # 1. Analyze complete message
+    # ---------------------------------------------
 
     analysis = analyze_message(
         user_text=user_text,
@@ -2680,19 +3269,20 @@ def lead_agent_reply(
         "confidence"
     )
 
-    # =====================================================
-    # 2. Merge all information and corrections
-    # =====================================================
+    # ---------------------------------------------
+    # 2. Merge facts + corrections
+    # ---------------------------------------------
 
-    merge_analysis(
+    correction_confirmations = merge_analysis(
         lead=lead,
         analysis=analysis,
         user_text=user_text,
+        current_field=field_before,
     )
 
-    # =====================================================
+    # ---------------------------------------------
     # 3. Safety
-    # =====================================================
+    # ---------------------------------------------
 
     if analysis.get(
         "intent"
@@ -2703,15 +3293,14 @@ def lead_agent_reply(
         ] = "ESCALATED"
 
         return (
-            "Bu vəziyyət peşəkar və təcili diqqət "
-            "tələb edə bilər. Junior Coaching tibbi və "
-            "ya psixoloji təcili yardımı əvəz etmir. "
-            "Müraciətinizi məsul əməkdaşa yönləndirirəm."
+            "Bu vəziyyət peşəkar və təcili diqqət tələb edə bilər. "
+            "Junior Coaching tibbi və ya psixoloji təcili yardımı "
+            "əvəz etmir. Müraciətinizi məsul əməkdaşa yönləndirirəm."
         )
 
-    # =====================================================
-    # 4. Human handoff
-    # =====================================================
+    # ---------------------------------------------
+    # 4. Human agent
+    # ---------------------------------------------
 
     if analysis.get(
         "intent"
@@ -2722,35 +3311,13 @@ def lead_agent_reply(
         ] = "ESCALATED"
 
         return (
-            "Əlbəttə. Müraciətinizi Junior Coaching "
-            "komandasından məsul əməkdaşa yönləndirmək "
-            "üçün qeydə aldım."
+            "Əlbəttə. Müraciətinizi məsul əməkdaşa "
+            "yönləndirmək üçün qeydə aldım."
         )
 
-    # =====================================================
-    # 5. Complaint
-    # =====================================================
-
-    if analysis.get(
-        "intent"
-    ) == "complaint":
-
-        # Uşağın problemi complaint deyil
-        if field_before != "main_concern":
-
-            lead[
-                "status"
-            ] = "ESCALATED"
-
-            return (
-                "Narahatlığınızı başa düşürəm. "
-                "Müraciətinizi məsul əməkdaşa "
-                "yönləndirmək üçün qeydə aldım."
-            )
-
-    # =====================================================
-    # 6. Permission to ask
-    # =====================================================
+    # ---------------------------------------------
+    # 5. Permission
+    # ---------------------------------------------
 
     if (
         analysis.get(
@@ -2765,30 +3332,22 @@ def lead_agent_reply(
             "Əlbəttə, buyurun 😊"
         )
 
-    # =====================================================
-    # 7. State question
-    # =====================================================
+    # ---------------------------------------------
+    # 6. STATE QUESTION FIRST
+    # ---------------------------------------------
 
-    if (
-        analysis.get(
-            "intent"
-        ) == "state_question"
-        or is_state_question(
-            user_text
-        )
-    ):
+    state_answer = answer_state_question(
+        user_text,
+        lead,
+    )
 
-        state_answer = answer_state_question(
-            user_text,
-            lead,
-        )
+    if state_answer:
 
-        if state_answer:
-            return state_answer
+        return state_answer
 
-    # =====================================================
-    # 8. Pure greeting
-    # =====================================================
+    # ---------------------------------------------
+    # 7. Pure greeting
+    # ---------------------------------------------
 
     if (
         analysis.get(
@@ -2814,92 +3373,139 @@ def lead_agent_reply(
                 )
             )
 
-        # artıq salamlaşmışıq
-        question = get_next_question(
-            lead
-        )
-
-        if question:
-
-            return question
-
         return (
-            "Buyurun 😊"
+            get_next_question(
+                lead
+            )
+            or "Buyurun 😊"
         )
 
-    # =====================================================
-    # 9. Questions first
-    # =====================================================
+    # ---------------------------------------------
+    # 8. Questions
+    # ---------------------------------------------
 
     questions = analysis.get(
         "questions",
         []
     )
 
-    if not questions:
+    # Deterministic recovery if LLM misses a direct question
+    if (
+        not questions
+        and "?" in user_text
+    ):
 
-        # deterministic question fallback
-        if (
-            "?" in user_text
-            or analysis.get(
-                "intent"
-            ) in [
-                "faq_question",
-                "program_interest",
-                "meta_question",
-            ]
-        ):
+        questions = [{
+            "text": user_text,
+            "topic": (
+                deterministic_question_topic(
+                    user_text
+                )
+                or "other"
+            ),
+        }]
 
-            questions = [
-                user_text
-            ]
+    question_answer = ""
 
     if questions:
 
-        answer = answer_user_questions(
-            user_text=user_text,
-            questions=questions,
-            lead=lead,
-            history=history,
+        question_answer = answer_all_questions(
+            questions,
+            lead,
         )
 
-        # ---------------------------------------------
-        # CONVERSATION BRIDGE
-        # ---------------------------------------------
+    # ---------------------------------------------
+    # 9. Correction confirmation
+    # ---------------------------------------------
 
-        has_lead_info = has_any_lead_info(
+    correction_text = ""
+
+    if correction_confirmations:
+
+        # remove duplicate confirmation strings
+        unique_confirmations = list(
+            dict.fromkeys(
+                correction_confirmations
+            )
+        )
+
+        correction_text = (
+            "Düzəltdim ✅ "
+            + " ".join(
+                unique_confirmations
+            )
+        )
+
+    # ---------------------------------------------
+    # 10. If we have user questions, answer first
+    # ---------------------------------------------
+
+    if question_answer:
+
+        parts = []
+
+        if correction_text:
+            parts.append(
+                correction_text
+            )
+
+        parts.append(
+            question_answer
+        )
+
+        # No lead yet = soft bridge
+        if not has_any_lead_info(
             lead
-        )
+        ):
 
-        if not has_lead_info:
-
-            answer += (
-                "\n\nBaşqa sualınız varsa, buyurun 😊 "
+            parts.append(
+                "Başqa sualınız varsa, buyurun 😊 "
                 "Müraciət etmək istəyirsinizsə, "
                 "sizə necə müraciət edə bilərəm?"
             )
 
-            return answer
+            return "\n\n".join(
+                parts
+            )
 
-        # artıq müraciət məlumatı verilib
-        # yalnız 1 next-flow question
+        # Lead started: maximum ONE next question
         next_question = get_next_question(
             lead
         )
 
         if next_question:
 
-            answer += (
-                "\n\n"
+            parts.append(
+                next_question
+            )
+
+        return "\n\n".join(
+            parts
+        )
+
+    # ---------------------------------------------
+    # 11. Correction-only turn
+    # ---------------------------------------------
+
+    if correction_text:
+
+        next_question = get_next_question(
+            lead
+        )
+
+        if next_question:
+
+            return (
+                correction_text
+                + "\n\n"
                 + next_question
             )
 
-        return answer
+        return correction_text
 
-    # =====================================================
-    # 10. If extractor did not advance current field,
-    # use fallback
-    # =====================================================
+    # ---------------------------------------------
+    # 12. Fallback save if extraction did not advance
+    # ---------------------------------------------
 
     field_after_merge = get_next_missing_field(
         lead
@@ -2916,9 +3522,9 @@ def lead_agent_reply(
             user_text=user_text,
         )
 
-    # =====================================================
-    # 11. Completion
-    # =====================================================
+    # ---------------------------------------------
+    # 13. Complete?
+    # ---------------------------------------------
 
     next_field = get_next_missing_field(
         lead
@@ -2934,10 +3540,6 @@ def lead_agent_reply(
             lead
         )
 
-    # =====================================================
-    # 12. Flow has started after first information
-    # =====================================================
-
     if has_any_lead_info(
         lead
     ):
@@ -2946,17 +3548,13 @@ def lead_agent_reply(
             "_flow_started"
         ] = True
 
-    # =====================================================
-    # 13. Maximum one next question
-    # =====================================================
-
     return get_next_question(
         lead
     )
 
 
 # =========================================================
-# 22. DATABASE INIT
+# 24. DATABASE
 # =========================================================
 
 def init_db():
@@ -2998,6 +3596,31 @@ def init_db():
 
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS children (
+
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                lead_id INTEGER,
+                child_index INTEGER,
+
+                name TEXT,
+                age INTEGER,
+                main_concern TEXT,
+
+                needs_concern_followup INTEGER DEFAULT 0,
+                concern_duration TEXT,
+                concern_onset TEXT,
+
+                created_at TEXT,
+
+                FOREIGN KEY (lead_id)
+                REFERENCES leads(id)
+            )
+            """
+        )
+
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS conversation_logs (
 
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3033,6 +3656,8 @@ def init_db():
             """
         )
 
+        # ---------- leads migration ----------
+
         existing = {
             row[1]
             for row in conn.execute(
@@ -3059,6 +3684,8 @@ def init_db():
                     ADD COLUMN {column} {dtype}
                     """
                 )
+
+        # ---------- log migration ----------
 
         existing_logs = {
             row[1]
@@ -3094,7 +3721,7 @@ def init_db():
 
 
 # =========================================================
-# 23. TIME
+# 25. TIME
 # =========================================================
 
 def get_baku_time():
@@ -3109,11 +3736,11 @@ def get_baku_time():
 
 
 # =========================================================
-# 24. FIND LEAD
+# 26. FIND LEAD
 # =========================================================
 
 def find_lead_by_phone(
-    phone: str
+    phone: str,
 ):
 
     if not phone:
@@ -3139,17 +3766,20 @@ def find_lead_by_phone(
         ).fetchone()
 
         if row:
-            return dict(row)
+
+            return dict(
+                row
+            )
 
     return None
 
 
 # =========================================================
-# 25. SAVE LEAD
+# 27. SAVE LEAD + CHILDREN
 # =========================================================
 
 def save_lead_to_db(
-    lead: dict
+    lead: dict,
 ) -> int:
 
     ensure_lead_structure(
@@ -3201,7 +3831,6 @@ def save_lead_to_db(
 
                 created_at,
                 updated_at
-
             )
 
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -3210,70 +3839,122 @@ def save_lead_to_db(
                 lead.get(
                     "parent_name"
                 ),
-
                 lead.get(
                     "parent_title"
                 ),
-
                 lead.get(
                     "child_name"
                 ),
-
                 lead.get(
                     "child_age"
                 ),
-
                 lead.get(
                     "main_concern"
                 ),
-
                 int(
                     bool(
                         lead.get(
                             "needs_concern_followup",
-                            False
+                            False,
                         )
                     )
                 ),
-
                 lead.get(
                     "concern_duration"
                 ),
-
                 lead.get(
                     "concern_onset"
                 ),
-
                 children_json,
-
                 lead.get(
                     "phone"
                 ),
-
                 lead.get(
                     "preferred_call_time"
                 ),
-
                 lead.get(
                     "source"
                 ),
-
                 lead.get(
                     "status"
                 ),
-
                 now,
                 now,
             ),
         )
 
+        lead_id = cursor.lastrowid
+
+        # Save each child separately
+        for index, child in enumerate(
+            lead.get(
+                "children",
+                []
+            )
+        ):
+
+            conn.execute(
+                """
+                INSERT INTO children (
+
+                    lead_id,
+                    child_index,
+
+                    name,
+                    age,
+                    main_concern,
+
+                    needs_concern_followup,
+                    concern_duration,
+                    concern_onset,
+
+                    created_at
+                )
+
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    lead_id,
+                    index,
+
+                    child.get(
+                        "name"
+                    ),
+                    child.get(
+                        "age"
+                    ),
+                    child.get(
+                        "main_concern"
+                    ),
+
+                    int(
+                        bool(
+                            child.get(
+                                "needs_concern_followup",
+                                False,
+                            )
+                        )
+                    ),
+
+                    child.get(
+                        "concern_duration"
+                    ),
+
+                    child.get(
+                        "concern_onset"
+                    ),
+
+                    now,
+                ),
+            )
+
         conn.commit()
 
-        return cursor.lastrowid
+        return lead_id
 
 
 # =========================================================
-# 26. SAVE CONVERSATION LOG
+# 28. SAVE CONVERSATION LOG
 # =========================================================
 
 def save_conversation_log(
@@ -3337,7 +4018,6 @@ def save_conversation_log(
                 source,
 
                 created_at
-
             )
 
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -3408,7 +4088,7 @@ def save_conversation_log(
 
 
 # =========================================================
-# 27. ADMIN
+# 29. ADMIN HELPERS
 # =========================================================
 
 def get_all_leads():
@@ -3423,6 +4103,28 @@ def get_all_leads():
             """
             SELECT *
             FROM leads
+            ORDER BY id DESC
+            """
+        ).fetchall()
+
+        return [
+            dict(row)
+            for row in rows
+        ]
+
+
+def get_all_children():
+
+    with sqlite3.connect(
+        DB_PATH
+    ) as conn:
+
+        conn.row_factory = sqlite3.Row
+
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM children
             ORDER BY id DESC
             """
         ).fetchall()
