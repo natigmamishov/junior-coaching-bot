@@ -1,5 +1,5 @@
 """
-Junior Coaching — Bot Engine V3
+Junior Coaching — Bot Engine V6 Conversation Manager
 
 Əsas prinsiplər
 ---------------
@@ -1457,211 +1457,181 @@ def analyze_message(
     history: Optional[List[Dict[str, str]]] = None,
     faq_candidates: Optional[List[Dict[str, Any]]] = None,
 ) -> dict:
-
     """
-    V4 nüvəsi.
+    V6 Conversation Analyzer.
 
-    V3-dən fərqi: model tək bir mesajı deyil, üç şeyi
-    BİRLİKDƏ görür —
-        1. söhbətin kontekstini (əvvəlki mesajlar),
-        2. artıq toplanmış məlumatları (state),
-        3. knowledge base namizədlərini.
-
-    Bu sayədə:
-      - bir mesajdakı bütün məlumatlar ayrıla bilir,
-      - valideyn səhvi düzəldəndə state yenilənə bilir,
-      - sual leksik deyil, məna əsasında cavablandırılır.
+    Bir mesajı tək intent kimi yox, bütöv dialoq addımı kimi analiz edir:
+      - bütün slotları çıxarır,
+      - bir neçə sualı ayrıca ayırır,
+      - düzəlişləri müəyyən edir,
+      - state haqqında sualları tanıyır,
+      - flow-a indi qayıtmağın təbii olub-olmadığını seçir.
     """
 
-    ensure_lead_structure(
-        lead
-    )
+    ensure_lead_structure(lead)
 
     state = {
-        "parent_name": lead.get(
-            "parent_name"
-        ),
-        "phone": lead.get(
-            "phone"
-        ),
-        "preferred_call_time": lead.get(
-            "preferred_call_time"
-        ),
-        "children": lead.get(
-            "children"
-        ),
-        "next_missing_field": get_next_missing_field(
-            lead
-        ),
+        "parent_name": lead.get("parent_name"),
+        "parent_title": lead.get("parent_title"),
+        "phone": lead.get("phone"),
+        "preferred_call_time": lead.get("preferred_call_time"),
+        "children": lead.get("children"),
+        "next_missing_field": get_next_missing_field(lead),
     }
 
     if client is None:
-
-        return build_fallback_extraction(
-            user_text
-        )
+        data = build_fallback_extraction(user_text)
+        data.setdefault("questions", [user_text] if data.get("is_question") else [])
+        data.setdefault("state_question_type", "")
+        data.setdefault("resume_flow", False)
+        return data
 
     candidates_text = "\n".join(
         f"[{item['id']}] {item['question']}"
         for item in (faq_candidates or [])
     ) or "(namizəd yoxdur)"
 
-    system_prompt = """
-Sən Junior Coaching müraciət sisteminin analiz modulusan.
+    system_prompt = r"""
+Sən Junior Coaching müraciət sisteminin CONVERSATION ANALYZER modulusan.
 
-Sənə HƏR DƏFƏ üç şey verilir:
+HƏR DƏFƏ bunları birlikdə nəzərə al:
 1. SÖHBƏT TARİXÇƏSİ
-2. CARİ STATE (artıq toplanmış məlumat)
+2. CARİ STATE
 3. KNOWLEDGE BASE NAMİZƏDLƏRİ
+4. VALİDEYNİN SON MESAJI
 
-Üçünü BİRLİKDƏ nəzərə alaraq cavab ver.
+MƏQSƏD: son mesajı bütöv emal et. Flow-u mesaja zorla tətbiq etmə.
 
+A) BİR MESAJDA BÜTÜN MƏLUMATLARI ÇIXAR
 
-A) BÜTÜN MƏLUMATLARI ÇIXAR
-
-Bir mesajda neçə məlumat varsa hamısını çıxar.
-
-"Mən Nərgizəm. Oğlum Orxanın 15 yaşı var.
-Özünəinamı zəifdir. Nömrəm 0501234567.
-Sabah 15:00-dan sonra danışa bilərəm."
-
+Misal:
+"Mən Nərgizəm. Oğlum Orxanın 15 yaşı var. Özünəinamı zəifdir.
+Nömrəm 0501234567. Sabah 15:00-dan sonra danışa bilərəm."
 => parent_name=Nərgiz
-   children=[{name:Orxan, age:15, main_concern:özünəinam}]
-   phone=0501234567
-   preferred_call_time=sabah 15:00-dan sonra
+=> children=[{name:Orxan, age:15, main_concern:özünəinam}]
+=> phone=0501234567
+=> preferred_call_time=sabah 15:00-dan sonra
 
+Bir mesajda həm məlumat, həm sual ola bilər. Məlumatı itirmə.
 
-B) BİR NEÇƏ UŞAQ
+B) BİR NEÇƏ SUALI AYIR
 
-children massivdir. Hər uşaq ayrıca element olmalıdır.
+"Görüşlər harada keçirilir və qiyməti nə qədərdir?"
+=> questions=["Görüşlər harada keçirilir?", "Qiyməti nə qədərdir?"]
 
-"2 uşaqdır Ayxan və Orxan"
-=> children=[{name:Ayxan}, {name:Orxan}]
-   multiple_children=true, children_count=2
+"Telefon zəngi nə qədər davam edir, uşağın yanında olması lazımdır?"
+=> 2 ayrı sual.
 
-"13 və 15 yaşında iki uşağım var"
-=> children=[{age:13}, {age:15}]
+questions massivində istifadəçinin REAL suallarını ayrı-ayrı saxla.
+question_text geriyə uyğunluq üçün ilk sual olsun, sual yoxdursa boş olsun.
 
-Uşaqların sırasını valideynin dediyi sıra ilə saxla.
+C) MƏNA FƏRQLƏRİNİ QORU
 
+- "Görüşlər harada keçirilir?" = MƏKAN
+- "Görüşlər hansı gün keçirilir?" = GÜN/TARİX
+- "Görüşlər neçə saatdır?" = QRUP GÖRÜŞÜNÜN MÜDDƏTİ
+- "Telefon zəngi nə qədər davam edir?" = VALİDEYNLƏ İLKİN TELEFON ZƏNGİNİN MÜDDƏTİ
+- "Gələ bilmədiyimiz görüşü əvəz etmək olur?" = BURAXILMIŞ GÖRÜŞÜN ƏVƏZLƏNMƏSİ
+- "Yalnız bir görüşə gələ bilərik?" = BİRDƏFƏLİK İŞTİRAK
+Bunları bir-biri ilə qarışdırma.
 
-C) DÜZƏLİŞLƏR — ÇOX VACİB
+D) DÜZƏLİŞLƏR
 
-Valideyn əvvəl verdiyi məlumatı dəyişirsə,
-bunu corrections massivinə yaz.
+Əvvəlki state səhvdirsə corrections massivinə yaz və yeni dəyəri də çıxar.
 
-Tarixçəyə bax: state-də olan dəyər səhvdirsə düzəlt.
-
-"Yox, uşağın adı Tunardır"      => corrections=[{field:child_name, child_index:0, value:Tunar}]
 "Aygün mənəm, uşağın adı Ayxandır"
-   => corrections=[{field:parent_name, value:Aygün},
-                   {field:child_name, child_index:0, value:Ayxan}]
-"Səhv yazdım, 14 yaşı var"      => corrections=[{field:child_age, child_index:0, value:14}]
-"Adı Toğruldur" (state-də başqa ad varsa)
-   => corrections=[{field:child_name, child_index:0, value:Toğrul}]
+=> corrections=[
+ {field:parent_name, child_index:0, value:Aygün},
+ {field:child_name, child_index:0, value:Ayxan}
+]
 
-Düzəliş yoxdursa corrections boş massiv olsun.
+"mənə yox, Tunar"
+Əgər tarixçədən bunun uşaq adı düzəlişi olduğu aydındırsa:
+=> correction child_name=Tunar
 
+"yox, 14 yaşı var"
+=> correction child_age=14
 
-D) AD və ROL QARIŞMASIN
+E) AD VƏ ROL
 
-"anasıyam", "atasıyam", "valideyniyəm" ROL-dur, ad DEYİL.
-   => parent_title=xanım (ana) / bəy (ata), parent_name boş qalsın.
-
-"Salam, anasıyam Afət"  => parent_name=Afət, parent_title=xanım
-"Aygün xanım"           => parent_name=Aygün, parent_title=xanım
-"mənə", "dedim yuxarıda", "bilmirəm", "hə", "yox"
-   => AD DEYİL, boş burax.
-
+"anasıyam", "atasıyam", "valideyniyəm", "mənə", "mənim" AD DEYİL.
 "Mən Aygünəm" => parent_name=Aygün
 "Adım İsmayıldır" => parent_name=İsmayıl
-"adı Orxandır" => child_name=Orxan
+"Aygün xanım" => parent_name=Aygün, parent_title=xanım
+"Salam, anasıyam Afət" => parent_name=Afət, parent_title=xanım
+"adı Ayxandır" => child_name=Ayxan
 
-Rol ifadəsi olmasa belə, Azərbaycan adına görə
-parent_title-i təyin et:
-  Leyla, Aygün, Nərgiz, Afət -> xanım
-  Murad, İsmayıl, Orxan, Natiq -> bəy
-Əmin deyilsənsə boş burax.
+Valideyn və uşaq adını qarışdırma. "mənəm" valideynə, "uşağın adı/övladım/oğlum/qızım" uşağa aiddir.
 
+F) STATE HAQQINDA SUALLAR
 
-E) SUALI MƏNA İLƏ SEÇ
+Aşağıdakılar FAQ deyil, state_question intentidir:
+- "Adımı qeyd etdiniz?"
+- "Nömrəmi götürdünüz?"
+- "Uşağın yaşını qeyd etdiniz?"
+- "Mən nə demişdim?"
+- "Məlumatlarımı qeyd etmisiniz?"
 
-Namizədlər [id] Sual formasında verilir.
+state_question_type:
+parent_name, child_name, child_age, main_concern, phone,
+preferred_call_time, summary və ya boş string.
 
-Valideynin sualının MƏNASINA ən uyğun olanın id-sini
-faq_choice sahəsinə yaz.
+G) INTENT
 
-Leksik oxşarlığa aldanma:
-"görüşlər harada keçirilir?" -> məkan haqqındadır,
-   "hansı gün keçirilir?" DEYİL.
-"telefon zəngi nə qədər davam edir?" -> zəngin müddəti,
-   proqramın 9 ayı DEYİL.
-"buraxılan görüş əvəzlənirmi?" -> buraxılan görüşün əvəzi,
-   pul qaytarılması DEYİL.
-
-Heç bir namizəd sualın mənasını qarşılamırsa faq_choice=-1.
-
-
-F) INTENT
-
-greeting              salamlaşma
-smalltalk             "necəsiniz", "təşəkkür", "sağ olun"
-permission_to_ask     "bir sual verə bilərəm?", "sual vermək olar?"
-faq_question          proqram haqqında real sual
-field_answer          soruşulan məlumata cavab
-correction            əvvəlki məlumatın düzəlişi
+greeting              yalnız salamlaşma
+smalltalk             təşəkkür, sağ olun, necəsiniz
+permission_to_ask     "bir sual verə bilərəm?"
+faq_question          proqram haqqında real sual(lar)
+state_question        artıq toplanmış məlumat haqqında sual
+field_answer          flow-dakı sahəyə cavab
+correction            əvvəlki məlumatı düzəldir
 refusal               məlumat verməkdən imtina
-program_interest      maraq bildirir
-registration_request  qeydiyyat istəyi
+program_interest      proqramla maraq
+registration_request  qeydiyyat/müraciət istəyi
 human_agent_request   canlı əməkdaş istəyi
-complaint             Junior Coaching XİDMƏTİNDƏN narazılıq
-safety_risk           təhlükə, özünə zərər
-meta_question         "niyə soruşursunuz", "siz botsunuz?"
+complaint             Junior Coaching xidmətindən narazılıq
+safety_risk           özünə/başqasına zərər və təcili risk
+meta_question         "niyə soruşursunuz?", "siz botsunuz?"
 pause_request         "sonra danışaq"
 unrelated             əlaqəsiz
 
-"bir sual verə bilərəm?" permission_to_ask-dır, faq_question DEYİL.
-Bu halda is_question=false olsun.
+"məsuliyyətsizdir", "özgüvəni zəifdir", "məqsəd və gələcək",
+"ünsiyyəti zəifdir", "hamısı", "hər biri" = main_concern/field_answer,
+FAQ və complaint DEYİL.
 
-Uşağın mənfi xüsusiyyəti (məsuliyyətsizdir, özgüvəni zəifdir,
-telefondan ayrılmır) complaint DEYİL — bu main_concern-dir.
+"bir sual verə bilərəm?" => permission_to_ask, is_question=false.
 
-İMTİNA complaint DEYİL:
-"nömrə vermək istəmirəm", "telefonla əlaqə üçün uyğun deyiləm",
-"yazmaq istəmirəm", "lazım deyil" => intent=refusal
+H) SALAMLAŞMA
 
-İmtina mətnini HEÇ BİR sahəyə yazma
-(main_concern, preferred_call_time və s.).
+Tarixçədə agent artıq salamlaşıbsa, istifadəçinin son mesajında "Salam" sözünün olması
+intent-i greeting etməməlidir, əgər mesajda başqa məna/sual da varsa.
+"Salam, qiymət nə qədərdir?" => faq_question, greeting deyil.
 
-Soruşulan sahəyə birbaşa cavab verilirsə
-(next_missing_field-ə bax) intent=field_answer,
-is_question=false olsun.
+I) topic_open və resume_flow
 
-"hamısı" main_concern sualına CAVABDIR — faq_question DEYİL.
+topic_open=true:
+- valideyn eyni mövzunu davam etdirir,
+- follow-up edir,
+- bir cavabdan sonra əlavə izah gözləyir,
+- eyni sualı başqa cür yenidən soruşur.
 
+resume_flow=true yalnız o zaman ki:
+- valideynin sualı tam cavablandırıldıqdan sonra anketə qayıtmaq təbii görünür,
+- cavabın ardınca maksimum BİR flow sualı vermək münasibdir.
 
-G) topic_open
+Əgər valideyn israrla qiyməti, məkanı, proqramı və s. müzakirə edir, resume_flow=false.
+Flow-u valideynin mövzusundan üstün tutma.
 
-Valideynin mövzusu tam bitməyibsə topic_open=true.
+J) BİR NEÇƏ UŞAQ
 
-true olur:
- - sual verib və təbii olaraq davamı gözlənilir,
- - permission_to_ask,
- - aydınlaşdırma istəyir.
+children massivdir; hər uşaq ayrıca elementdir.
+"13 və 15 yaşında iki uşağım var" => 2 uşaq.
+Uşaqların sırasını valideynin dediyi sıra ilə saxla.
 
-false olur:
- - mövzu bağlanıb, flow-a qayıtmaq təbiidir.
+K) İMTİNA
 
-topic_open=true olanda agent növbəti anket sualını verməyəcək.
-
-
-H) main_concern nümunələri
-
-özgüvən, məqsəd və gələcək, məsuliyyət, intizam, ünsiyyət,
-fokus, liderlik, emosional zəka, qərarvermə, dərs,
-telefon asılılığı, sosiallaşma
-
-"hamısı", "hər biri" də main_concern kimi qəbul edilir.
+"nömrə vermək istəmirəm", "demək istəmirəm" => refusal.
+İmtina mətnini slot kimi yazma.
 """
 
     user_prompt = f"""
@@ -1679,111 +1649,60 @@ VALİDEYNİN SON MESAJI:
 """
 
     try:
-
         response = client.chat.completions.create(
-
             model="gpt-4o-mini",
-
             temperature=0,
-
             messages=[
-                {
-                    "role": "system",
-                    "content": system_prompt,
-                },
-                {
-                    "role": "user",
-                    "content": user_prompt,
-                },
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
             ],
-
             response_format={
                 "type": "json_schema",
                 "json_schema": {
-                    "name": "junior_message_analysis",
+                    "name": "junior_message_analysis_v6",
                     "strict": True,
                     "schema": {
                         "type": "object",
                         "properties": {
-
                             "intent": {
                                 "type": "string",
                                 "enum": [
-                                    "greeting",
-                                    "smalltalk",
-                                    "permission_to_ask",
-                                    "faq_question",
-                                    "field_answer",
-                                    "correction",
-                                    "refusal",
-                                    "program_interest",
-                                    "registration_request",
-                                    "human_agent_request",
-                                    "complaint",
-                                    "safety_risk",
-                                    "meta_question",
-                                    "pause_request",
-                                    "unrelated",
-                                ],
+                                    "greeting", "smalltalk", "permission_to_ask",
+                                    "faq_question", "state_question", "field_answer",
+                                    "correction", "refusal", "program_interest",
+                                    "registration_request", "human_agent_request",
+                                    "complaint", "safety_risk", "meta_question",
+                                    "pause_request", "unrelated"
+                                ]
                             },
-
-                            "is_question": {
-                                "type": "boolean"
-                            },
-
-                            "question_text": {
-                                "type": "string"
-                            },
-
-                            "faq_choice": {
-                                "type": "integer",
-                                "description": (
-                                    "Ən uyğun namizədin id-si, "
-                                    "uyğun yoxdursa -1"
-                                ),
-                            },
-
-                            "topic_open": {
-                                "type": "boolean"
-                            },
-
-                            "parent_name": {
-                                "type": "string"
-                            },
-
-                            "parent_title": {
+                            "is_question": {"type": "boolean"},
+                            "question_text": {"type": "string"},
+                            "questions": {"type": "array", "items": {"type": "string"}},
+                            "faq_choice": {"type": "integer"},
+                            "state_question_type": {
                                 "type": "string",
                                 "enum": [
-                                    "xanım",
-                                    "bəy",
-                                    "",
-                                ],
+                                    "", "parent_name", "child_name", "child_age",
+                                    "main_concern", "phone", "preferred_call_time", "summary"
+                                ]
                             },
-
+                            "topic_open": {"type": "boolean"},
+                            "resume_flow": {"type": "boolean"},
+                            "parent_name": {"type": "string"},
+                            "parent_title": {"type": "string", "enum": ["xanım", "bəy", ""]},
                             "children": {
                                 "type": "array",
                                 "items": {
                                     "type": "object",
                                     "properties": {
-                                        "name": {
-                                            "type": "string"
-                                        },
-                                        "age": {
-                                            "type": "integer"
-                                        },
-                                        "main_concern": {
-                                            "type": "string"
-                                        },
+                                        "name": {"type": "string"},
+                                        "age": {"type": "integer"},
+                                        "main_concern": {"type": "string"}
                                     },
-                                    "required": [
-                                        "name",
-                                        "age",
-                                        "main_concern",
-                                    ],
-                                    "additionalProperties": False,
-                                },
+                                    "required": ["name", "age", "main_concern"],
+                                    "additionalProperties": False
+                                }
                             },
-
                             "corrections": {
                                 "type": "array",
                                 "items": {
@@ -1792,88 +1711,47 @@ VALİDEYNİN SON MESAJI:
                                         "field": {
                                             "type": "string",
                                             "enum": [
-                                                "parent_name",
-                                                "child_name",
-                                                "child_age",
-                                                "main_concern",
-                                                "phone",
-                                                "preferred_call_time",
-                                            ],
+                                                "parent_name", "child_name", "child_age",
+                                                "main_concern", "phone", "preferred_call_time"
+                                            ]
                                         },
-                                        "child_index": {
-                                            "type": "integer"
-                                        },
-                                        "value": {
-                                            "type": "string"
-                                        },
+                                        "child_index": {"type": "integer"},
+                                        "value": {"type": "string"}
                                     },
-                                    "required": [
-                                        "field",
-                                        "child_index",
-                                        "value",
-                                    ],
-                                    "additionalProperties": False,
-                                },
+                                    "required": ["field", "child_index", "value"],
+                                    "additionalProperties": False
+                                }
                             },
-
-                            "phone": {
-                                "type": "string"
-                            },
-
-                            "preferred_call_time": {
-                                "type": "string"
-                            },
-
-                            "multiple_children": {
-                                "type": "boolean"
-                            },
-
-                            "children_count": {
-                                "type": "integer"
-                            },
-
-                            "confidence": {
-                                "type": "number"
-                            },
+                            "phone": {"type": "string"},
+                            "preferred_call_time": {"type": "string"},
+                            "multiple_children": {"type": "boolean"},
+                            "children_count": {"type": "integer"},
+                            "confidence": {"type": "number"}
                         },
-
                         "required": [
-                            "intent",
-                            "is_question",
-                            "question_text",
-                            "faq_choice",
-                            "topic_open",
-                            "parent_name",
-                            "parent_title",
-                            "children",
-                            "corrections",
-                            "phone",
-                            "preferred_call_time",
-                            "multiple_children",
-                            "children_count",
-                            "confidence",
+                            "intent", "is_question", "question_text", "questions",
+                            "faq_choice", "state_question_type", "topic_open", "resume_flow",
+                            "parent_name", "parent_title", "children", "corrections",
+                            "phone", "preferred_call_time", "multiple_children",
+                            "children_count", "confidence"
                         ],
-
-                        "additionalProperties": False,
-                    },
-                },
-            },
+                        "additionalProperties": False
+                    }
+                }
+            }
         )
-
-        return json.loads(
-            response.choices[0].message.content
-        )
+        data = json.loads(response.choices[0].message.content)
+        if not data.get("questions") and data.get("question_text"):
+            data["questions"] = [data["question_text"]]
+        return data
 
     except Exception as exc:
-
-        print(
-            "MESSAGE ANALYSIS ERROR:",
-            exc,
-        )
-
-        return build_fallback_extraction(
-            user_text
-        )
+        print("MESSAGE ANALYSIS ERROR:", exc)
+        data = build_fallback_extraction(user_text)
+        data.setdefault("questions", [user_text] if data.get("is_question") else [])
+        data.setdefault("state_question_type", "")
+        data.setdefault("resume_flow", False)
+        return data
 
 
 # Köhnə ad — geriyə uyğunluq üçün saxlanılır.
@@ -3221,87 +3099,297 @@ def answer_special_question(
 # 16. FAQ ANSWER + ONE NEXT QUESTION
 # =========================================================
 
+def history_has_greeting(
+    history: Optional[List[Dict[str, str]]],
+) -> bool:
+    """Agent artıq salamlaşıbsa True."""
+
+    if not history:
+        return False
+
+    for message in history:
+        if message.get("role") != "assistant":
+            continue
+        value = normalize_for_search(
+            message.get("content", "")
+        )
+        if value.startswith("salam") or "xos gelmisiniz" in value:
+            return True
+
+    return False
+
+
+def answer_state_question(
+    lead: dict,
+    state_question_type: str,
+) -> str:
+    """FAQ-a getmədən artıq toplanmış state-dən cavab verir."""
+
+    ensure_lead_structure(lead)
+    parent = get_parent_display_name(lead)
+    child = get_active_child(lead)
+
+    if state_question_type == "parent_name":
+        if parent:
+            return f"Bəli, adınızı {parent} kimi qeyd etmişəm."
+        return "Hələ adınızı qeyd etməmişəm."
+
+    if state_question_type == "child_name":
+        name = child.get("name")
+        if name:
+            return f"Bəli, övladınızın adını {name} kimi qeyd etmişəm."
+        return "Hələ övladınızın adını qeyd etməmişəm."
+
+    if state_question_type == "child_age":
+        age = child.get("age")
+        if age:
+            return f"Bəli, övladınızın yaşını {age} olaraq qeyd etmişəm."
+        return "Hələ övladınızın yaşını qeyd etməmişəm."
+
+    if state_question_type == "main_concern":
+        concern = child.get("main_concern")
+        if concern:
+            return f"Bəli, əsas ehtiyac kimi “{concern}” qeyd etmişəm."
+        return "Hələ əsas ehtiyac barədə məlumat qeyd etməmişəm."
+
+    if state_question_type == "phone":
+        phone = lead.get("phone")
+        if phone:
+            return f"Bəli, əlaqə nömrənizi {phone} kimi qeyd etmişəm."
+        return "Hələ telefon nömrənizi qeyd etməmişəm."
+
+    if state_question_type == "preferred_call_time":
+        call_time = lead.get("preferred_call_time")
+        if call_time:
+            return f"Bəli, uyğun zəng vaxtını “{call_time}” kimi qeyd etmişəm."
+        return "Hələ zəng üçün uyğun vaxt qeyd etməmişik."
+
+    # summary
+    parts = []
+    if parent:
+        parts.append(f"adınız: {parent}")
+
+    for idx, item in enumerate(lead.get("children", []), start=1):
+        child_parts = []
+        if item.get("name"):
+            child_parts.append(f"ad: {item['name']}")
+        if item.get("age"):
+            child_parts.append(f"yaş: {item['age']}")
+        if item.get("main_concern"):
+            child_parts.append(f"ehtiyac: {item['main_concern']}")
+        if child_parts:
+            prefix = "övlad" if len(lead.get("children", [])) == 1 else f"{idx}-ci övlad"
+            parts.append(prefix + ": " + ", ".join(child_parts))
+
+    if lead.get("phone"):
+        parts.append(f"telefon: {lead['phone']}")
+    if lead.get("preferred_call_time"):
+        parts.append(f"zəng vaxtı: {lead['preferred_call_time']}")
+
+    if not parts:
+        return "Hələ müraciət üzrə məlumat toplamamışıq."
+
+    return "Bəli, indiyə qədər bunları qeyd etmişəm: " + "; ".join(parts) + "."
+
+
+def generate_contextual_kb_answer(
+    question: str,
+    lead: dict,
+    history: Optional[List[Dict[str, str]]] = None,
+    faq_min_score: float = 0.18,
+) -> str:
+    """
+    Hər REAL sual üçün ayrıca retrieval + semantic selection edir.
+
+    TF-IDF yalnız namizəd gətirir. Son seçim LLM tərəfindən sualın
+    mənasına görə edilir. Cavab yalnız knowledge base faktlarına söykənir.
+    """
+
+    special = answer_special_question(question, lead)
+    if special:
+        return special
+
+    candidates = retrieve_faq_candidates(
+        question,
+        k=10,
+        min_score=0.04,
+    )
+
+    if not candidates:
+        return (
+            "Bu sualla bağlı məlumat bazasında dəqiq cavab tapmadım. "
+            "İstəsəniz bu sualı məsul əməkdaşa yönləndirə bilərik."
+        )
+
+    if client is None:
+        best = candidates[0]
+        if best["score"] >= faq_min_score:
+            lead["_last_faq_score"] = best["score"]
+            return best["answer"]
+        return (
+            "Bu sualla bağlı məlumat bazasında dəqiq cavab tapmadım. "
+            "İstəsəniz bu sualı məsul əməkdaşa yönləndirə bilərik."
+        )
+
+    candidate_text = "\n\n".join(
+        f"ID={item['id']}\nSUAL: {item['question']}\nCAVAB: {item['answer']}"
+        for item in candidates
+    )
+
+    state = {
+        "parent_name": lead.get("parent_name"),
+        "parent_title": lead.get("parent_title"),
+        "children": lead.get("children"),
+        "phone": lead.get("phone"),
+        "preferred_call_time": lead.get("preferred_call_time"),
+    }
+
+    system_prompt = r"""
+Sən Junior Coaching üçün cavab seçən və təbii formada ifadə edən modulusan.
+
+QAYDALAR:
+1. İstifadəçinin sualının MƏNASINA tam uyğun knowledge-base namizədini seç.
+2. Leksik oxşarlığa aldanma.
+   - "harada" = məkan, "hansı gün" = gün, "neçə saat" = müddət.
+   - "telefon zəngi neçə dəqiqə" = valideynlə ilkin telefon zənginin müddəti.
+   - "gələ bilmədiyimiz görüşü əvəz etmək" = buraxılmış görüşün əvəzlənməsi.
+   - "yalnız bir görüşə gəlmək" = birdəfəlik iştirak.
+3. Dəqiq uyğun namizəd yoxdursa matched=false.
+4. Heç bir fakt uydurma. Qiymət/rəqəm knowledge base-də yoxdursa özündən rəqəm demə.
+5. Knowledge-base cavabının sonunda başqa sual varsa, istifadəçi həmin sualı verməyibsə
+   onu mexaniki şəkildə cavaba əlavə etmə.
+6. Tarixçədə eyni mövzuya artıq cavab verilib və istifadəçi yenidən soruşursa,
+   eyni cümləni sözbəsöz təkrarlama. Onun narahatlığını qısa şəkildə qəbul et,
+   sonra knowledge-base-də olan faktı fərqli və təbii formada izah et.
+7. Xüsusilə qiymət mövzusunda: knowledge base dəqiq rəqəm vermirsə bunu açıq de.
+   İstifadəçi ikinci dəfə büdcə üçün təxmini rəqəm istəyirsə, yenə saxta rəqəm demə;
+   dəqiq/təxmini rəqəmin bu məlumat bazasında olmadığını izah et və məsul əməkdaşdan
+   dəqiqləşdirmə təklif et. Eyni flow sualını təkrarlama.
+8. Cavab 1-3 qısa abzas olsun. Yeni anket sualı yaratma.
+"""
+
+    user_prompt = f"""
+SÖHBƏT TARİXÇƏSİ:
+{build_history_text(history)}
+
+CARİ STATE:
+{json.dumps(state, ensure_ascii=False)}
+
+İSTİFADƏÇİNİN SUALI:
+{question}
+
+KNOWLEDGE BASE NAMİZƏDLƏRİ:
+{candidate_text}
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.15,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "junior_contextual_answer_v6",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "matched": {"type": "boolean"},
+                            "selected_id": {"type": "integer"},
+                            "answer": {"type": "string"}
+                        },
+                        "required": ["matched", "selected_id", "answer"],
+                        "additionalProperties": False
+                    }
+                }
+            }
+        )
+        result = json.loads(response.choices[0].message.content)
+
+        if result.get("matched"):
+            selected_id = result.get("selected_id", -1)
+            for item in candidates:
+                if item["id"] == selected_id:
+                    lead["_last_faq_score"] = item["score"]
+                    break
+            answer = str(result.get("answer", "")).strip()
+            if answer:
+                return answer
+
+    except Exception as exc:
+        print("CONTEXTUAL FAQ ERROR:", exc)
+
+    # Təhlükəsiz fallback: yalnız yüksək confidence namizədi qaytar.
+    best = candidates[0]
+    if best["score"] >= faq_min_score:
+        lead["_last_faq_score"] = best["score"]
+        return best["answer"]
+
+    return (
+        "Bu sualla bağlı məlumat bazasında dəqiq cavab tapmadım. "
+        "İstəsəniz bu sualı məsul əməkdaşa yönləndirə bilərik."
+    )
+
+
 def answer_user_question(
     user_text: str,
     lead: dict,
     faq_min_score: float,
     data: Optional[dict] = None,
     faq_candidates: Optional[List[Dict[str, Any]]] = None,
+    history: Optional[List[Dict[str, str]]] = None,
 ) -> str:
-
-    """
-    Suala cavab verir.
-
-    Cavabı LLM SEÇİR, TF-IDF yalnız namizəd verir.
-    Səbəb: leksik oxşarlıq mənanı tutmur.
-
-    Anket sualı avtomatik əlavə EDİLMİR — bunu
-    lead_agent_reply mövzunun bağlanıb-bağlanmadığına
-    görə həll edir.
-    """
+    """Bir mesajdakı bütün sualları ayrı-ayrılıqda cavablandırır."""
 
     data = data or {}
 
-    special = answer_special_question(
-        user_text,
-        lead,
-    )
+    if data.get("intent") == "state_question":
+        return answer_state_question(
+            lead,
+            data.get("state_question_type", "summary") or "summary",
+        )
 
-    if special:
+    questions = [
+        str(q).strip()
+        for q in (data.get("questions") or [])
+        if str(q).strip()
+    ]
 
-        return special
+    if not questions and data.get("question_text"):
+        questions = [str(data["question_text"]).strip()]
 
-    # 1. LLM-in seçdiyi namizəd
-    choice = data.get(
-        "faq_choice",
-        -1,
-    )
+    if not questions:
+        questions = [user_text]
 
-    if (
-        isinstance(choice, int)
-        and choice >= 0
-        and 0 <= choice < len(FAQ_ANSWERS)
-    ):
+    answers = []
+    seen = set()
 
-        for item in (faq_candidates or []):
+    for question in questions[:4]:
+        normalized = normalize_for_search(question)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
 
-            if item["id"] == choice:
+        answer = generate_contextual_kb_answer(
+            question=question,
+            lead=lead,
+            history=history,
+            faq_min_score=faq_min_score,
+        )
+        if answer:
+            answers.append(answer)
 
-                lead[
-                    "_last_faq_score"
-                ] = item["score"]
+    if not answers:
+        return (
+            "Bu sualla bağlı məlumat bazasında dəqiq cavab tapmadım. "
+            "İstəsəniz bu sualı məsul əməkdaşa yönləndirə bilərik."
+        )
 
-                break
-
-        return FAQ_ANSWERS[
-            choice
-        ]
-
-    # 2. LLM seçim etməyibsə (və ya açar yoxdursa)
-    #    klassik TF-IDF fallback
-    faq = answer_faq_question(
-        user_text,
-        min_score=faq_min_score,
-    )
-
-    if faq:
-
-        lead[
-            "_last_faq_score"
-        ] = faq[
-            "score"
-        ]
-
-        return faq[
-            "answer"
-        ]
-
-    return (
-        "Bu sualla bağlı məlumat bazasında "
-        "dəqiq cavab tapmadım. "
-        "İstəsəniz bu sualı məsul əməkdaşa "
-        "yönləndirə bilərik."
-    )
+    return "\n\n".join(answers)
 
 
 # =========================================================
@@ -3623,53 +3711,63 @@ def append_next_question(
     )
 
 
+def _detect_state_question_type(
+    user_text: str,
+) -> str:
+    """Ən çox rast gəlinən state suallarını deterministik tutur."""
+
+    value = normalize_for_search(user_text)
+
+    if any(x in value for x in ["adimi qeyd", "adimi gotur", "adimi yaz", "adimi bilirsiz", "adimi bilirsiniz"]):
+        return "parent_name"
+    if any(x in value for x in ["usagin adini qeyd", "ovladimin adini qeyd", "usaqin adi yadinizda"]):
+        return "child_name"
+    if any(x in value for x in ["yasini qeyd", "yasi yadinizda", "yasini yazdiniz"]):
+        return "child_age"
+    if any(x in value for x in ["nomremi qeyd", "nomremi gotur", "telefonumu qeyd"]):
+        return "phone"
+    if any(x in value for x in ["vaxti qeyd", "zeng vaxtini qeyd"]):
+        return "preferred_call_time"
+    if any(x in value for x in ["melumatlarimi qeyd", "ne qeyd etmisiniz", "men ne demisdim", "neleri qeyd"]):
+        return "summary"
+
+    return ""
+
+
 def lead_agent_reply(
     user_text: str,
     lead: dict,
     faq_min_score: float = 0.18,
     history: Optional[List[Dict[str, str]]] = None,
 ) -> str:
-
     """
-    V4 axını.
+    V6 Conversation Manager.
 
-    Fərq: analiz mərhələsi söhbət kontekstini,
-    toplanmış məlumatları və knowledge base namizədlərini
-    BİRLİKDƏ görür.
+    Prinsip:
+      1. Cari mesaj + tarixçə + state birlikdə analiz olunur.
+      2. Mesajdakı BÜTÜN yeni məlumatlar state-ə yazılır.
+      3. Düzəlişlər köhnə state-i overwrite edir.
+      4. Mesajda sual varsa əvvəl bütün suallar cavablandırılır.
+      5. Flow yalnız təbii olduqda və maksimum bir sualla davam edir.
     """
 
     user_text = user_text.strip()
-
-    ensure_lead_structure(
-        lead
-    )
+    ensure_lead_structure(lead)
 
     if history is None:
+        history = lead.setdefault("_history", [])
 
-        history = lead.setdefault(
-            "_history",
-            [],
-        )
+    field_before = get_next_missing_field(lead)
+    lead["_last_faq_score"] = None
 
-    field_before = get_next_missing_field(
-        lead
-    )
-
-    lead[
-        "_last_faq_score"
-    ] = None
-
-    # =====================================================
-    # 1. Namizədləri əvvəlcədən tap (recall)
-    # =====================================================
-
+    # -----------------------------------------------------
+    # 1. İlk recall + conversation analysis
+    # -----------------------------------------------------
     faq_candidates = retrieve_faq_candidates(
-        user_text
+        user_text,
+        k=12,
+        min_score=0.03,
     )
-
-    # =====================================================
-    # 2. Kontekstli analiz
-    # =====================================================
 
     data = analyze_message(
         user_text=user_text,
@@ -3678,307 +3776,221 @@ def lead_agent_reply(
         faq_candidates=faq_candidates,
     )
 
-    lead[
-        "_last_intent"
-    ] = data.get(
-        "intent"
-    )
+    # Deterministik state sualı LLM səhvindən daha etibarlıdır.
+    deterministic_state_question = _detect_state_question_type(user_text)
+    if deterministic_state_question:
+        data["intent"] = "state_question"
+        data["state_question_type"] = deterministic_state_question
+        data["is_question"] = True
+        data["resume_flow"] = False
 
-    lead[
-        "_last_confidence"
-    ] = data.get(
-        "confidence"
-    )
+    lead["_last_intent"] = data.get("intent")
+    lead["_last_confidence"] = data.get("confidence")
 
-    # =====================================================
-    # 3. Merge + düzəlişlər
-    # =====================================================
-
+    # -----------------------------------------------------
+    # 2. Bütün məlumatları merge et
+    # -----------------------------------------------------
     corrected = merge_extracted_information(
         lead,
         data,
         user_text,
     )
 
-    intent = data.get(
-        "intent"
-    )
-
+    intent = data.get("intent")
     reply = None
 
-    # =====================================================
-    # 4. Safety
-    # =====================================================
-
+    # -----------------------------------------------------
+    # 3. Təhlükəsizlik / handoff / real complaint
+    # -----------------------------------------------------
     if intent == "safety_risk":
-
-        lead[
-            "status"
-        ] = "ESCALATED"
-
+        lead["status"] = "ESCALATED"
         reply = (
             "Bu vəziyyət peşəkar və təcili diqqət tələb edə bilər. "
-            "Junior Coaching tibbi və ya psixoloji təcili yardımı "
-            "əvəz etmir. Müraciətinizi məsul əməkdaşa yönləndirirəm."
+            "Junior Coaching tibbi və ya psixoloji təcili yardımı əvəz etmir. "
+            "Müraciətinizi məsul əməkdaşa yönləndirirəm."
         )
-
-    # =====================================================
-    # 5. Human agent
-    # =====================================================
 
     elif intent == "human_agent_request":
-
-        lead[
-            "status"
-        ] = "ESCALATED"
-
+        lead["status"] = "ESCALATED"
         reply = (
-            "Əlbəttə. Müraciətinizi məsul əməkdaşa "
+            "Əlbəttə. Müraciətinizi məsul əməkdaşa yönləndirmək üçün qeydə aldım."
+        )
+
+    elif intent == "complaint" and field_before != "main_concern":
+        lead["status"] = "ESCALATED"
+        reply = (
+            "Narahatlığınızı başa düşürəm. Müraciətinizi məsul əməkdaşa "
             "yönləndirmək üçün qeydə aldım."
         )
 
-    # =====================================================
-    # 6a. İmtina — şikayət DEYİL
-    #
-    # Əvvəllər "vermək istəmirəm" ya complaint kimi
-    # eskalasiya olunur, ya da eyni sual sonsuz təkrarlanırdı.
-    # =====================================================
+    # -----------------------------------------------------
+    # 4. İmtina
+    # -----------------------------------------------------
+    elif intent == "refusal" or is_refusal(user_text):
+        base = handle_refusal(lead, field_before)
+        # İlk imtinada cavab özü sualla bitə bilər; əlavə flow sualı vermirik.
+        if base.rstrip().endswith("?"):
+            reply = base
+        elif get_next_missing_field(lead) is not None:
+            reply = append_next_question(base, lead, with_bridge=False)
+        else:
+            reply = base
 
-    elif (
-        intent == "refusal"
-        or is_refusal(
-            user_text
-        )
-    ):
-
-        reply = append_next_question(
-            handle_refusal(
-                lead,
-                field_before,
-            ),
-            lead,
-            with_bridge=False,
-        )
-
-    # =====================================================
-    # 6b. Yalnız real xidmət şikayəti
-    # =====================================================
-
-    elif (
-        intent == "complaint"
-        and field_before != "main_concern"
-    ):
-
-        lead[
-            "status"
-        ] = "ESCALATED"
-
-        reply = (
-            "Narahatlığınızı başa düşürəm. "
-            "Müraciətinizi məsul əməkdaşa "
-            "yönləndirmək üçün qeydə aldım."
-        )
-
-    # =====================================================
-    # 7. "Bir sual verə bilərəm?"
-    #    Knowledge base-də axtarılmır.
-    # =====================================================
-
+    # -----------------------------------------------------
+    # 5. Bir sual vermək üçün icazə
+    # -----------------------------------------------------
     elif intent == "permission_to_ask":
+        reply = "Əlbəttə, buyurun 😊"
 
+    # -----------------------------------------------------
+    # 6. State haqqında sual
+    # -----------------------------------------------------
+    elif intent == "state_question":
+        reply = answer_state_question(
+            lead,
+            data.get("state_question_type", "summary") or "summary",
+        )
+        # State sualından sonra avtomatik flow-u məcbur etmirik.
+
+    # -----------------------------------------------------
+    # 7. Pause
+    # -----------------------------------------------------
+    elif intent == "pause_request":
         reply = (
-            "Əlbəttə, buyurun 😊"
+            "Əlbəttə 😊 İstədiyiniz zaman buradan davam edə bilərsiniz. "
+            "İndiyə qədər paylaşdığınız məlumatları nəzərə alacağam."
         )
 
-    # =====================================================
-    # 8. Salamlaşma / kiçik söhbət
-    # =====================================================
+    # -----------------------------------------------------
+    # 8. Salam / smalltalk — salam yalnız bir dəfə
+    # -----------------------------------------------------
+    elif intent in ("greeting", "smalltalk"):
+        already_greeted = history_has_greeting(history)
 
-    elif intent in (
-        "greeting",
-        "smalltalk",
-    ):
+        if intent == "greeting":
+            opening = "Salam 😊" if not already_greeted else "Buyurun 😊"
+        else:
+            opening = "Təşəkkür edirəm 😊"
 
-        opening = (
-            "Salam 😊"
-            if intent == "greeting"
-            else "Təşəkkür edirəm 😊"
-        )
-
+        # Əgər sırf salam/smalltalk-dırsa bir növbəti sual verilə bilər.
         reply = append_next_question(
             opening,
             lead,
             with_bridge=False,
         )
 
-    # =====================================================
-    # 9. Sual verilib — ƏVVƏL CAVAB
-    # =====================================================
-
-    # "hamısı" soruşulan suala CAVABDIR, FAQ sualı deyil.
-    # Əks halda agent bilik bazasından əlaqəsiz cavab verirdi.
+    # -----------------------------------------------------
+    # 9. main_concern-a birbaşa qısa cavab
+    # -----------------------------------------------------
     elif (
         field_before == "main_concern"
-        and is_direct_concern_answer(
-            user_text
-        )
+        and is_direct_concern_answer(user_text)
+        and not data.get("questions")
     ):
-
-        save_current_field_fallback(
-            lead=lead,
-            field="main_concern",
-            user_text=user_text,
-        )
-
-        if get_next_missing_field(
-            lead
-        ) is None:
-
-            reply = finalize_lead(
-                lead
+        # Analyzer artıq concern-i merge etmiş ola bilər.
+        if get_next_missing_field(lead) == "main_concern":
+            save_current_field_fallback(
+                lead=lead,
+                field="main_concern",
+                user_text=user_text,
             )
 
+        if get_next_missing_field(lead) is None:
+            reply = finalize_lead(lead)
         else:
+            reply = append_next_question("", lead, with_bridge=False)
 
-            reply = append_next_question(
-                "",
-                lead,
-                with_bridge=False,
-            )
-
+    # -----------------------------------------------------
+    # 10. REAL sual(lar) — ƏVVƏL hamısını cavablandır
+    # -----------------------------------------------------
     elif (
-        data.get(
-            "is_question"
-        )
-        or intent in (
-            "faq_question",
-            "program_interest",
-            "meta_question",
-        )
+        data.get("questions")
+        or data.get("is_question")
+        or intent in ("faq_question", "program_interest", "meta_question")
     ):
-
         answer = answer_user_question(
             user_text=user_text,
             lead=lead,
             faq_min_score=faq_min_score,
             data=data,
             faq_candidates=faq_candidates,
+            history=history,
         )
 
-        # Mövzu açıq qalıbsa anket sualı verilmir —
-        # əvvəl valideynin mövzusu aydınlaşsın.
-        if data.get(
-            "topic_open"
-        ):
+        correction_ack = build_correction_ack(corrected)
+        if correction_ack:
+            answer = correction_ack + "\n\n" + answer
 
-            reply = answer
-
-        else:
-
+        # Flow yalnız analyzer bunun təbii olduğunu deyəndə qayıdır.
+        # Eyni mövzuda follow-up / israr varsa qayıtmır.
+        if data.get("resume_flow") and not data.get("topic_open"):
             reply = append_next_question(
                 answer,
                 lead,
+                with_bridge=True,
+            )
+        else:
+            reply = answer
+
+    # -----------------------------------------------------
+    # 11. Düzəliş
+    # -----------------------------------------------------
+    elif corrected:
+        ack = build_correction_ack(corrected)
+        if get_next_missing_field(lead) is None:
+            reply = finalize_lead(lead)
+            if ack:
+                reply = ack + "\n\n" + reply
+        else:
+            reply = append_next_question(
+                ack,
+                lead,
+                with_bridge=False,
             )
 
-    # =====================================================
-    # 10. Düzəliş edilib, başqa məlumat yoxdur
-    # =====================================================
-
-    elif corrected:
-
-        reply = append_next_question(
-            build_correction_ack(
-                corrected
-            ),
-            lead,
-            with_bridge=False,
-        )
-
-    # =====================================================
-    # 11. Adi field cavabı
-    # =====================================================
-
+    # -----------------------------------------------------
+    # 12. Adi field cavabı
+    # -----------------------------------------------------
     if reply is None:
+        field_after_merge = get_next_missing_field(lead)
 
-        field_after_merge = get_next_missing_field(
-            lead
-        )
-
-        if (
-            field_before
-            and field_before == field_after_merge
-        ):
-
+        # Analyzer heç nə çıxarmayıbsa yalnız cari field üçün təhlükəsiz fallback.
+        if field_before and field_before == field_after_merge:
             save_current_field_fallback(
                 lead=lead,
                 field=field_before,
                 user_text=user_text,
             )
 
-        if get_next_missing_field(
-            lead
-        ) is None:
-
-            reply = finalize_lead(
-                lead
-            )
-
+        if get_next_missing_field(lead) is None:
+            reply = finalize_lead(lead)
         else:
-
-            prefix = build_correction_ack(
-                corrected
-            )
-
+            prefix = build_correction_ack(corrected)
             reply = append_next_question(
                 prefix,
                 lead,
-                with_bridge=not prefix,
+                with_bridge=not bool(prefix),
             )
 
-    # =====================================================
-    # 11b. Bütün sahələr bitibsə yekunlaşdır
-    #
-    # İmtina səbəbindən sahə keçiləndə axın da bitə bilər,
-    # ona görə yoxlama mərkəzləşdirilib.
-    # =====================================================
-
+    # -----------------------------------------------------
+    # 13. Bütün sahələr tamamlanıbsa yekunlaşdır
+    # -----------------------------------------------------
     if (
-        lead.get(
-            "status"
-        ) == "NEW"
-        and get_next_missing_field(
-            lead
-        ) is None
+        lead.get("status") == "NEW"
+        and get_next_missing_field(lead) is None
     ):
+        final_message = finalize_lead(lead)
 
-        final_message = finalize_lead(
-            lead
-        )
+        # Əgər indicə sual cavablandırılıbsa yekunu ayrıca əlavə etmək olar,
+        # amma eyni final mesajı ikinci dəfə yazmırıq.
+        if final_message not in (reply or ""):
+            reply = f"{reply}\n\n{final_message}" if reply else final_message
 
-        reply = (
-            f"{reply}\n\n{final_message}"
-            if reply
-            else final_message
-        )
-
-    # =====================================================
-    # 12. Tarixçəni yenilə
-    # =====================================================
-
-    history.append(
-        {
-            "role": "user",
-            "content": user_text,
-        }
-    )
-
-    history.append(
-        {
-            "role": "assistant",
-            "content": reply,
-        }
-    )
-
+    # -----------------------------------------------------
+    # 14. Tarixçə
+    # -----------------------------------------------------
+    history.append({"role": "user", "content": user_text})
+    history.append({"role": "assistant", "content": reply})
     del history[:-MAX_HISTORY_MESSAGES]
 
     return reply
