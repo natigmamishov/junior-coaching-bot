@@ -1,7 +1,15 @@
 # ============================================================
 # JUNIOR COACHING
 # AI SALES & CONVERSATION ENGINE
-# V10.1 - PLAYBOOK DRIVEN + APP.PY COMPATIBILITY
+# V10.2
+#
+# Understand
+# -> Extract
+# -> Reason
+# -> Build Response Obligations
+# -> Answer
+# -> Update State
+# -> Policy Based Next Step
 # ============================================================
 
 import os
@@ -9,11 +17,13 @@ import re
 import json
 import uuid
 import sqlite3
+
 from copy import deepcopy
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import httpx
+
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -25,7 +35,9 @@ from sklearn.metrics.pairwise import cosine_similarity
 # 1. PATHS / CONFIG
 # ============================================================
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(
+    os.path.abspath(__file__)
+)
 
 FAQ_PATH = os.path.join(
     BASE_DIR,
@@ -37,7 +49,12 @@ DB_PATH = os.path.join(
     "junior_coaching.db"
 )
 
-load_dotenv(os.path.join(BASE_DIR, ".env"))
+load_dotenv(
+    os.path.join(
+        BASE_DIR,
+        ".env"
+    )
+)
 
 MODEL_NAME = os.getenv(
     "OPENAI_MODEL",
@@ -49,13 +66,17 @@ MODEL_NAME = os.getenv(
 # 2. OPENAI CLIENT
 # ============================================================
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY = os.getenv(
+    "OPENAI_API_KEY"
+)
 
 if not OPENAI_API_KEY:
+
     raise RuntimeError(
         "OPENAI_API_KEY tapılmadı. "
         ".env və ya Streamlit Secrets daxilində əlavə edin."
     )
+
 
 http_client = httpx.Client(
     verify=False,
@@ -69,83 +90,96 @@ client = OpenAI(
 
 
 # ============================================================
-# 3. BUSINESS FACTS
+# 3. APPROVED BUSINESS FACTS
+#
+# IMPORTANT:
+# LLM hard-fact yaratmamalıdır.
+# Bu bölmə source-of-truth rolunu oynayır.
 # ============================================================
 
 BUSINESS_FACTS = {
 
-    "program_name": "Junior Coaching",
+    "program_name":
+        "Junior Coaching",
 
-    "age_min": 12,
-    "age_max": 18,
+    "age_min":
+        12,
 
-    "near_age_rule": (
-        "12 yaşa çox yaxın olan uşaqlar avtomatik rədd edilmir. "
-        "Qısa görüntülü tanışlıqdan sonra mütəxəssis "
-        "qrupa uyğunluğu qiymətləndirir."
-    ),
+    "age_max":
+        18,
 
-    "format": (
-        "Canlı qrup formatıdır. Praktik məşqlər, komanda işi, "
-        "situasiyalar, layihələr və təqdimatlardan istifadə olunur."
-    ),
+    "near_age_rule":
+        (
+            "12 yaşa çox yaxın olan uşaqlar avtomatik "
+            "rədd edilmir. Uyğunluğu mütəxəssis ayrıca "
+            "qiymətləndirə bilər."
+        ),
 
-    "frequency": "Ayda 3 bazar günü",
+    "format":
+        (
+            "Canlı qrup formatıdır. Praktik məşqlər, "
+            "komanda işi, situasiyalar, layihələr və "
+            "təqdimatlardan istifadə olunur."
+        ),
 
-    "group_session_duration": "2 saat",
+    "group_frequency":
+        "Ayda 3 bazar günü",
 
-    "full_program_duration": "9 ay / 27 görüş",
+    "group_session_duration":
+        "2 saat",
 
-    "language": (
-        "Görüşlər əsasən Azərbaycan dilində keçirilir. "
-        "Ehtiyac olduqda bəzi materiallar rus və ya ingilis "
-        "dilində təqdim oluna bilər."
-    ),
+    "full_program_duration":
+        "9 ay / 27 görüş",
 
-    "address": (
-        "Süleyman Sani Axundov küçəsi, ADAS Plaza — "
-        "ELİT T/M yaxınlığı"
-    ),
+    "language":
+        (
+            "Görüşlər əsasən Azərbaycan dilində keçirilir. "
+            "Ehtiyac olduqda bəzi materiallar rus və ya "
+            "ingilis dilində təqdim oluna bilər."
+        ),
 
-    "individual_coaching_duration": "30–45 dəqiqə",
+    "address":
+        (
+            "Süleyman Sani Axundov küçəsi, "
+            "ADAS Plaza — ELİT T/M yaxınlığı"
+        ),
 
-    "individual_coaching_price": 80,
+    "parent_initial_call_duration":
+        "5–7 dəqiqə",
 
-    # Qrup modul qiymətləri hələ production source-of-truth deyil
-    "foundation_price": None,
-    "leadership_price": None,
-    "pro_price": None,
-    "impact_price": None,
+    "child_intro_duration":
+        "təxminən 5 dəqiqə",
 
-    "child_intro_duration": "təxminən 5 dəqiqə",
+    "individual_coaching_duration":
+        "30–45 dəqiqə",
 
-    "parent_initial_call_duration": "5–7 dəqiqə",
+    "individual_coaching_price":
+        80,
 
-    "therapy_boundary": (
-        "Junior Coaching terapiya, psixoloji və ya "
-        "psixiatrik müalicə xidməti deyil."
-    )
+    # Group module prices are NOT approved yet
+    "foundation_price":
+        None,
+
+    "leadership_price":
+        None,
+
+    "pro_price":
+        None,
+
+    "impact_price":
+        None,
+
+    "therapy_boundary":
+        (
+            "Junior Coaching terapiya, psixoloji diaqnostika "
+            "və ya psixiatrik müalicə xidməti deyil."
+        )
 }
 
 
 # ============================================================
-# 4. CONSTANTS
+# 4. ENUMS / CONSTANTS
 # ============================================================
-
-SALES_STAGES = {
-    "NEW",
-    "DISCOVERY",
-    "FIT_PRELIMINARY",
-    "READY_TO_PROCEED",
-    "CHILD_INTRO_PENDING",
-    "CHILD_INTRO_BOOKED",
-    "CHILD_INTRO_COMPLETED",
-    "FIT_APPROVED",
-    "FIT_NOT_APPROVED",
-    "PAYMENT_PENDING",
-    "REGISTERED",
-    "HUMAN_HANDOFF"
-}
 
 CHILD_WILLINGNESS_VALUES = {
     "unknown",
@@ -156,28 +190,33 @@ CHILD_WILLINGNESS_VALUES = {
 
 
 # ============================================================
-# 5. HELPERS
+# 5. BASIC HELPERS
 # ============================================================
 
 def get_baku_time():
+
     return datetime.now(
         ZoneInfo("Asia/Baku")
     )
 
 
 def now_string():
+
     return get_baku_time().strftime(
         "%Y-%m-%d %H:%M:%S"
     )
 
 
 def safe_text(value):
+
     if value is None:
         return ""
+
     return str(value).strip()
 
 
 def compact_spaces(text):
+
     return re.sub(
         r"\s+",
         " ",
@@ -187,7 +226,9 @@ def compact_spaces(text):
 
 def normalize_text(text):
 
-    text = safe_text(text).lower()
+    text = safe_text(
+        text
+    ).lower()
 
     replacements = {
         "ə": "e",
@@ -199,16 +240,18 @@ def normalize_text(text):
         "ğ": "g"
     }
 
-    for a, b in replacements.items():
-        text = text.replace(a, b)
+    for old, new in replacements.items():
 
-    text = re.sub(
+        text = text.replace(
+            old,
+            new
+        )
+
+    return re.sub(
         r"\s+",
         " ",
         text
     ).strip()
-
-    return text
 
 
 def normalize_phone(value):
@@ -222,10 +265,16 @@ def normalize_phone(value):
         str(value)
     )
 
-    if len(digits) == 10 and digits.startswith("0"):
+    if (
+        len(digits) == 10
+        and digits.startswith("0")
+    ):
         return digits
 
-    if len(digits) == 12 and digits.startswith("994"):
+    if (
+        len(digits) == 12
+        and digits.startswith("994")
+    ):
         return digits
 
     return None
@@ -233,29 +282,33 @@ def normalize_phone(value):
 
 def safe_int(value):
 
+    if value is None:
+        return None
+
+    if isinstance(
+        value,
+        int
+    ):
+        return value
+
+    match = re.search(
+        r"\b(\d{1,2})\b",
+        str(value)
+    )
+
+    if not match:
+        return None
+
     try:
-
-        if value is None:
-            return None
-
-        if isinstance(value, int):
-            return value
-
-        match = re.search(
-            r"\b(\d{1,2})\b",
-            str(value)
+        return int(
+            match.group(1)
         )
-
-        if not match:
-            return None
-
-        return int(match.group(1))
-
     except Exception:
         return None
 
 
 def json_dumps(data):
+
     return json.dumps(
         data,
         ensure_ascii=False,
@@ -264,120 +317,280 @@ def json_dumps(data):
 
 
 # ============================================================
-# 6. CHILD / LEAD STATE
+# 6. CHILD STATE
 # ============================================================
 
 def create_empty_child():
 
     return {
 
-        "child_id": str(uuid.uuid4()),
+        "child_id":
+            str(uuid.uuid4()),
 
-        "name": None,
-        "age": None,
+        "name":
+            None,
 
-        "need": None,
-        "need_tags": [],
+        "age":
+            None,
 
-        "context": None,
-        "duration": None,
-        "impact": None,
-        "desired_outcome": None,
+        "need":
+            None,
 
-        "willingness": "unknown",
+        "need_tags":
+            [],
 
-        "hypothesis": None,
-        "hypothesis_confidence": None,
+        "context":
+            None,
 
-        "recommended_path": None,
+        "duration":
+            None,
 
-        "discovery_question_count": 0,
-        "discovery_complete": False
+        "impact":
+            None,
+
+        "desired_outcome":
+            None,
+
+        "willingness":
+            "unknown",
+
+        "hypothesis":
+            None,
+
+        "hypothesis_confidence":
+            None,
+
+        "recommendation_signal":
+            "unknown",
+
+        "recommended_path":
+            None,
+
+        "discovery_question_count":
+            0,
+
+        "discovery_complete":
+            False
     }
 
 
-def create_empty_lead(source="Unknown"):
+# ============================================================
+# 7. LEAD STATE
+# ============================================================
+
+def create_empty_lead(
+    source="Unknown"
+):
 
     child = create_empty_child()
 
     return {
 
-        "parent_name": None,
-        "parent_title": None,
-        "phone": None,
+        # ----------------------------------------------------
+        # PARENT
+        # ----------------------------------------------------
 
-        "children": [child],
-        "active_child_index": 0,
+        "parent_name":
+            None,
 
-        # legacy compatibility
-        "child_name": None,
-        "child_age": None,
-        "main_concern": None,
+        "parent_title":
+            None,
 
-        "needs_concern_followup": False,
-        "concern_duration": None,
-        "concern_onset": None,
+        "phone":
+            None,
 
-        # sales
-        "sales_stage": "NEW",
-        "ready_to_proceed": False,
+        # ----------------------------------------------------
+        # MULTI CHILD
+        # ----------------------------------------------------
 
-        "child_intro_status": "NOT_STARTED",
-        "fit_status": "UNKNOWN",
-        "payment_status": "NOT_STARTED",
+        "children":
+            [child],
 
-        "recommended_path": None,
+        "active_child_index":
+            0,
 
-        # booking
-        "preferred_call_time": None,
-        "agreed_followup_at": None,
+        # ----------------------------------------------------
+        # LEGACY APP COMPATIBILITY
+        # ----------------------------------------------------
 
-        # ownership
-        "handoff_status": "none",
-        "owner": "AI",
+        "child_name":
+            None,
 
-        # conversation
-        "primary_intent": None,
-        "last_intents": [],
-        "next_action": None,
+        "child_age":
+            None,
 
-        "_conversation_history": [],
-        "_last_analysis": None,
-        "_last_bot_response": None,
-        "_last_user_message": None,
-        "_last_question_topic": None,
+        "main_concern":
+            None,
 
-        "_last_intent": None,
-        "_last_primary_intent": None,
-        "_last_confidence": None,
-        "_last_faq_score": None,
+        "needs_concern_followup":
+            False,
 
-        # old app
-        "source": source,
-        "status": "NEW"
+        "concern_duration":
+            None,
+
+        "concern_onset":
+            None,
+
+        # ----------------------------------------------------
+        # SALES / BUSINESS FLOW
+        # ----------------------------------------------------
+
+        "sales_stage":
+            "NEW",
+
+        "ready_to_proceed":
+            False,
+
+        # Normal sales path:
+        # lead -> parent call -> optional child intro
+
+        "parent_call_status":
+            "NOT_STARTED",
+
+        # NOT_STARTED / PENDING / BOOKED / COMPLETED
+
+        "parent_call_time":
+            None,
+
+        "child_intro_status":
+            "NOT_STARTED",
+
+        # NOT_STARTED / PENDING / BOOKED / COMPLETED
+
+        "child_intro_time":
+            None,
+
+        "child_intro_required":
+            False,
+
+        "fit_status":
+            "UNKNOWN",
+
+        "payment_status":
+            "NOT_STARTED",
+
+        "recommended_path":
+            None,
+
+        # ----------------------------------------------------
+        # OBJECTION / DECISION
+        # ----------------------------------------------------
+
+        "objection_type":
+            None,
+
+        "decision_blocker":
+            None,
+
+        "ambiguity_present":
+            False,
+
+        "clarification_needed":
+            False,
+
+        # ----------------------------------------------------
+        # FOLLOWUP
+        # ----------------------------------------------------
+
+        "preferred_call_time":
+            None,
+
+        "agreed_followup_at":
+            None,
+
+        # ----------------------------------------------------
+        # HUMAN OWNERSHIP
+        # ----------------------------------------------------
+
+        "handoff_status":
+            "none",
+
+        "owner":
+            "AI",
+
+        # ----------------------------------------------------
+        # ORCHESTRATION
+        # ----------------------------------------------------
+
+        "primary_intent":
+            None,
+
+        "all_intents":
+            [],
+
+        "response_obligations":
+            [],
+
+        "next_action":
+            None,
+
+        # ----------------------------------------------------
+        # MEMORY
+        # ----------------------------------------------------
+
+        "_conversation_history":
+            [],
+
+        "_last_analysis":
+            None,
+
+        "_last_bot_response":
+            None,
+
+        "_last_user_message":
+            None,
+
+        "_last_question_topic":
+            None,
+
+        "_last_intent":
+            None,
+
+        "_last_confidence":
+            None,
+
+        "_last_faq_score":
+            None,
+
+        # ----------------------------------------------------
+        # LEGACY
+        # ----------------------------------------------------
+
+        "source":
+            source,
+
+        "status":
+            "NEW"
     }
 
 
 # ============================================================
-# 7. CHILD HELPERS
+# 8. CHILD HELPERS
 # ============================================================
 
 def ensure_children(lead):
 
     if "children" not in lead:
+
         lead["children"] = []
 
     if not lead["children"]:
+
         lead["children"].append(
             create_empty_child()
         )
 
-    if lead.get("active_child_index") is None:
+    if lead.get(
+        "active_child_index"
+    ) is None:
+
         lead["active_child_index"] = 0
 
-    if lead["active_child_index"] >= len(
-        lead["children"]
+    if (
+        lead["active_child_index"]
+        >= len(lead["children"])
     ):
+
         lead["active_child_index"] = 0
 
     return lead["children"]
@@ -385,35 +598,67 @@ def ensure_children(lead):
 
 def get_active_child(lead):
 
-    ensure_children(lead)
-
-    index = lead.get(
-        "active_child_index",
-        0
+    ensure_children(
+        lead
     )
 
-    return lead["children"][index]
+    return lead[
+        "children"
+    ][
+        lead.get(
+            "active_child_index",
+            0
+        )
+    ]
 
 
 def sync_legacy_fields(lead):
 
-    child = get_active_child(lead)
-
-    lead["child_name"] = child.get("name")
-    lead["child_age"] = child.get("age")
-    lead["main_concern"] = child.get("need")
-
-    lead["concern_duration"] = child.get(
-        "duration"
+    child = get_active_child(
+        lead
     )
 
-    lead["concern_onset"] = child.get(
-        "context"
+    lead["child_name"] = (
+        child.get("name")
     )
 
-    lead["recommended_path"] = child.get(
-        "recommended_path"
+    lead["child_age"] = (
+        child.get("age")
     )
+
+    lead["main_concern"] = (
+        child.get("need")
+    )
+
+    lead["concern_duration"] = (
+        child.get("duration")
+    )
+
+    lead["concern_onset"] = (
+        child.get("context")
+    )
+
+    lead["recommended_path"] = (
+        child.get(
+            "recommended_path"
+        )
+    )
+
+    # old app used preferred_call_time
+    # for current booking time.
+    if (
+        lead.get("parent_call_time")
+        and
+        not lead.get(
+            "preferred_call_time"
+        )
+    ):
+
+        lead[
+            "preferred_call_time"
+        ] = lead[
+            "parent_call_time"
+        ]
 
     return lead
 
@@ -426,46 +671,61 @@ def find_child_by_name(
     if not name:
         return None
 
-    target = normalize_text(name)
+    target = normalize_text(
+        name
+    )
 
-    for i, child in enumerate(
-        lead.get("children", [])
+    for index, child in enumerate(
+        lead.get(
+            "children",
+            []
+        )
     ):
 
-        child_name = normalize_text(
-            child.get("name")
-        )
-
         if (
-            child_name
-            and child_name == target
+            normalize_text(
+                child.get("name")
+            )
+            == target
         ):
-            return i
+
+            return index
 
     return None
 
 
-def create_new_child(lead):
+def create_new_child(
+    lead
+):
 
     child = create_empty_child()
 
-    lead["children"].append(
+    lead[
+        "children"
+    ].append(
         child
     )
 
-    index = len(
-        lead["children"]
-    ) - 1
+    index = (
+        len(
+            lead["children"]
+        )
+        - 1
+    )
 
-    lead["active_child_index"] = index
+    lead[
+        "active_child_index"
+    ] = index
 
-    sync_legacy_fields(lead)
+    sync_legacy_fields(
+        lead
+    )
 
     return index
 
 
 # ============================================================
-# 8. FAQ / KNOWLEDGE BASE
+# 9. FAQ / KNOWLEDGE BASE
 # ============================================================
 
 FAQ_ITEMS = []
@@ -484,8 +744,9 @@ def parse_faq_file():
         FAQ_PATH,
         "r",
         encoding="utf-8"
-    ) as f:
-        text = f.read()
+    ) as file:
+
+        text = file.read()
 
     pattern = re.compile(
         r"""
@@ -507,7 +768,7 @@ def parse_faq_file():
         re.S | re.X | re.I
     )
 
-    items = []
+    result = []
 
     for match in pattern.finditer(
         text
@@ -523,12 +784,15 @@ def parse_faq_file():
 
         if question and answer:
 
-            items.append({
-                "question": question,
-                "answer": answer
+            result.append({
+                "question":
+                    question,
+
+                "answer":
+                    answer
             })
 
-    return items
+    return result
 
 
 def build_faq_index():
@@ -537,7 +801,9 @@ def build_faq_index():
     global FAQ_VECTORIZER
     global FAQ_MATRIX
 
-    FAQ_ITEMS = parse_faq_file()
+    FAQ_ITEMS = (
+        parse_faq_file()
+    )
 
     if not FAQ_ITEMS:
 
@@ -546,19 +812,24 @@ def build_faq_index():
 
         return
 
-    corpus = [
+    questions = [
         item["question"]
         for item in FAQ_ITEMS
     ]
 
-    FAQ_VECTORIZER = TfidfVectorizer(
-        lowercase=True,
-        ngram_range=(1, 2),
-        max_features=50000
+    FAQ_VECTORIZER = (
+        TfidfVectorizer(
+            lowercase=True,
+            ngram_range=(1, 2),
+            max_features=50000
+        )
     )
 
-    FAQ_MATRIX = FAQ_VECTORIZER.fit_transform(
-        corpus
+    FAQ_MATRIX = (
+        FAQ_VECTORIZER
+        .fit_transform(
+            questions
+        )
     )
 
 
@@ -569,42 +840,54 @@ def retrieve_similar(
 
     if (
         FAQ_VECTORIZER is None
-        or FAQ_MATRIX is None
-        or not FAQ_ITEMS
+        or
+        FAQ_MATRIX is None
+        or
+        not FAQ_ITEMS
     ):
+
         return []
 
-    q_vec = FAQ_VECTORIZER.transform(
-        [query]
+    query_vector = (
+        FAQ_VECTORIZER
+        .transform(
+            [query]
+        )
     )
 
     scores = cosine_similarity(
-        q_vec,
+        query_vector,
         FAQ_MATRIX
     )[0]
 
-    ranked_indices = scores.argsort()[::-1]
+    indices = (
+        scores
+        .argsort()[::-1]
+    )
 
-    results = []
+    result = []
 
-    for idx in ranked_indices[:top_k]:
+    for index in indices[:top_k]:
 
-        results.append({
+        result.append({
 
-            "question": FAQ_ITEMS[idx][
-                "question"
-            ],
+            "question":
+                FAQ_ITEMS[index][
+                    "question"
+                ],
 
-            "answer": FAQ_ITEMS[idx][
-                "answer"
-            ],
+            "answer":
+                FAQ_ITEMS[index][
+                    "answer"
+                ],
 
-            "score": float(
-                scores[idx]
-            )
+            "score":
+                float(
+                    scores[index]
+                )
         })
 
-    return results
+    return result
 
 
 def get_best_faq_hit(
@@ -620,7 +903,11 @@ def get_best_faq_hit(
     if not hits:
         return None
 
-    if hits[0]["score"] < min_score:
+    if (
+        hits[0]["score"]
+        < min_score
+    ):
+
         return None
 
     return hits[0]
@@ -630,26 +917,28 @@ build_faq_index()
 
 
 # ============================================================
-# 9. DATABASE
+# 10. DATABASE
 # ============================================================
 
 def get_connection():
 
-    conn = sqlite3.connect(
+    connection = sqlite3.connect(
         DB_PATH,
         check_same_thread=False
     )
 
-    conn.row_factory = sqlite3.Row
+    connection.row_factory = (
+        sqlite3.Row
+    )
 
-    return conn
+    return connection
 
 
 def add_column_if_missing(
     conn,
     table_name,
     column_name,
-    column_definition
+    definition
 ):
 
     rows = conn.execute(
@@ -667,7 +956,7 @@ def add_column_if_missing(
             f"""
             ALTER TABLE {table_name}
             ADD COLUMN {column_name}
-            {column_definition}
+            {definition}
             """
         )
 
@@ -706,7 +995,7 @@ def init_db():
         """
     )
 
-    new_lead_columns = {
+    new_columns = {
 
         "children_json":
             "TEXT",
@@ -717,8 +1006,20 @@ def init_db():
         "ready_to_proceed":
             "INTEGER DEFAULT 0",
 
+        "parent_call_status":
+            "TEXT",
+
+        "parent_call_time":
+            "TEXT",
+
         "child_intro_status":
             "TEXT",
+
+        "child_intro_time":
+            "TEXT",
+
+        "child_intro_required":
+            "INTEGER DEFAULT 0",
 
         "fit_status":
             "TEXT",
@@ -727,6 +1028,12 @@ def init_db():
             "TEXT",
 
         "recommended_path":
+            "TEXT",
+
+        "objection_type":
+            "TEXT",
+
+        "decision_blocker":
             "TEXT",
 
         "handoff_status":
@@ -745,7 +1052,9 @@ def init_db():
             "TEXT"
     }
 
-    for column, definition in new_lead_columns.items():
+    for column, definition in (
+        new_columns.items()
+    ):
 
         add_column_if_missing(
             conn,
@@ -814,7 +1123,7 @@ init_db()
 
 
 # ============================================================
-# 10. DATABASE CRUD
+# 11. DATABASE CRUD
 # ============================================================
 
 def find_lead_by_phone(
@@ -856,19 +1165,27 @@ def build_conversation_summary(
 
     parts = []
 
-    if lead.get("parent_name"):
+    if lead.get(
+        "parent_name"
+    ):
 
         parts.append(
-            f"Valideyn: {lead['parent_name']}"
+            "Valideyn: "
+            +
+            lead["parent_name"]
         )
 
-    if lead.get("phone"):
+    if lead.get(
+        "phone"
+    ):
 
         parts.append(
-            f"Telefon: {lead['phone']}"
+            "Telefon: "
+            +
+            lead["phone"]
         )
 
-    for i, child in enumerate(
+    for index, child in enumerate(
         lead.get(
             "children",
             []
@@ -876,52 +1193,75 @@ def build_conversation_summary(
         start=1
     ):
 
-        child_parts = []
+        values = []
 
         if child.get("name"):
 
-            child_parts.append(
-                f"ad={child['name']}"
+            values.append(
+                "ad="
+                +
+                child["name"]
             )
 
-        if child.get("age") is not None:
+        if (
+            child.get("age")
+            is not None
+        ):
 
-            child_parts.append(
-                f"yaş={child['age']}"
+            values.append(
+                "yaş="
+                +
+                str(child["age"])
             )
 
         if child.get("need"):
 
-            child_parts.append(
-                f"ehtiyac={child['need']}"
+            values.append(
+                "ehtiyac="
+                +
+                child["need"]
             )
 
         if child.get(
             "desired_outcome"
         ):
 
-            child_parts.append(
-                "istənilən nəticə="
+            values.append(
+                "nəticə="
                 +
-                child["desired_outcome"]
+                child[
+                    "desired_outcome"
+                ]
             )
 
-        if child_parts:
+        if values:
 
             parts.append(
-                f"Uşaq {i}: "
+                f"Uşaq {index}: "
                 +
-                ", ".join(
-                    child_parts
-                )
+                ", ".join(values)
             )
+
+    if lead.get(
+        "objection_type"
+    ):
+
+        parts.append(
+            "Etiraz: "
+            +
+            str(
+                lead[
+                    "objection_type"
+                ]
+            )
+        )
 
     if lead.get(
         "recommended_path"
     ):
 
         parts.append(
-            "İlkin tövsiyə: "
+            "İlkin yol: "
             +
             str(
                 lead[
@@ -930,13 +1270,17 @@ def build_conversation_summary(
             )
         )
 
-    if lead.get("next_action"):
+    if lead.get(
+        "next_action"
+    ):
 
         parts.append(
             "Növbəti addım: "
             +
             str(
-                lead["next_action"]
+                lead[
+                    "next_action"
+                ]
             )
         )
 
@@ -953,9 +1297,9 @@ def save_lead_to_db(
         lead
     )
 
-    conn = get_connection()
+    timestamp = now_string()
 
-    created_at = now_string()
+    conn = get_connection()
 
     cursor = conn.execute(
         """
@@ -983,44 +1327,81 @@ def save_lead_to_db(
             concern_onset,
 
             children_json,
+
             sales_stage,
             ready_to_proceed,
+
+            parent_call_status,
+            parent_call_time,
+
             child_intro_status,
+            child_intro_time,
+            child_intro_required,
+
             fit_status,
             payment_status,
+
             recommended_path,
+
+            objection_type,
+            decision_blocker,
+
             handoff_status,
             owner,
+
             agreed_followup_at,
             next_action,
+
             conversation_summary
         )
 
         VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         )
         """,
 
         (
-            lead.get("parent_name"),
-            lead.get("parent_title"),
 
-            lead.get("child_name"),
-            lead.get("child_age"),
+            lead.get(
+                "parent_name"
+            ),
 
-            lead.get("main_concern"),
+            lead.get(
+                "parent_title"
+            ),
 
-            lead.get("phone"),
+            lead.get(
+                "child_name"
+            ),
+
+            lead.get(
+                "child_age"
+            ),
+
+            lead.get(
+                "main_concern"
+            ),
+
+            lead.get(
+                "phone"
+            ),
+
             lead.get(
                 "preferred_call_time"
             ),
 
-            lead.get("source"),
-            lead.get("status"),
+            lead.get(
+                "source"
+            ),
 
-            created_at,
-            created_at,
+            lead.get(
+                "status"
+            ),
+
+            timestamp,
+            timestamp,
 
             int(
                 bool(
@@ -1058,7 +1439,27 @@ def save_lead_to_db(
             ),
 
             lead.get(
+                "parent_call_status"
+            ),
+
+            lead.get(
+                "parent_call_time"
+            ),
+
+            lead.get(
                 "child_intro_status"
+            ),
+
+            lead.get(
+                "child_intro_time"
+            ),
+
+            int(
+                bool(
+                    lead.get(
+                        "child_intro_required"
+                    )
+                )
             ),
 
             lead.get(
@@ -1074,10 +1475,20 @@ def save_lead_to_db(
             ),
 
             lead.get(
+                "objection_type"
+            ),
+
+            lead.get(
+                "decision_blocker"
+            ),
+
+            lead.get(
                 "handoff_status"
             ),
 
-            lead.get("owner"),
+            lead.get(
+                "owner"
+            ),
 
             lead.get(
                 "agreed_followup_at"
@@ -1093,7 +1504,9 @@ def save_lead_to_db(
         )
     )
 
-    lead_id = cursor.lastrowid
+    lead_id = (
+        cursor.lastrowid
+    )
 
     conn.commit()
     conn.close()
@@ -1102,7 +1515,7 @@ def save_lead_to_db(
 
 
 # ============================================================
-# 11. STATE FOR LLM
+# 12. STATE SANITIZER
 # ============================================================
 
 def sanitize_state_for_llm(
@@ -1121,11 +1534,20 @@ def sanitize_state_for_llm(
         "sales_stage",
         "ready_to_proceed",
 
+        "parent_call_status",
+        "parent_call_time",
+
         "child_intro_status",
+        "child_intro_time",
+        "child_intro_required",
+
         "fit_status",
         "payment_status",
 
         "recommended_path",
+
+        "objection_type",
+        "decision_blocker",
 
         "preferred_call_time",
         "agreed_followup_at",
@@ -1134,22 +1556,21 @@ def sanitize_state_for_llm(
         "owner",
 
         "primary_intent",
+        "all_intents",
+
         "next_action"
     ]
 
-    result = {}
-
-    for key in keys:
-
-        result[key] = deepcopy(
+    return {
+        key: deepcopy(
             lead.get(key)
         )
-
-    return result
+        for key in keys
+    }
 
 
 # ============================================================
-# 12. CONVERSATION HISTORY
+# 13. HISTORY
 # ============================================================
 
 def add_history(
@@ -1158,27 +1579,27 @@ def add_history(
     content
 ):
 
-    if "_conversation_history" not in lead:
-
-        lead[
-            "_conversation_history"
-        ] = []
+    lead.setdefault(
+        "_conversation_history",
+        []
+    )
 
     lead[
         "_conversation_history"
     ].append({
 
-        "role": role,
-        "content": content
+        "role":
+            role,
+
+        "content":
+            content
     })
 
     lead[
         "_conversation_history"
-    ] = (
-        lead[
-            "_conversation_history"
-        ][-16:]
-    )
+    ] = lead[
+        "_conversation_history"
+    ][-16:]
 
 
 def recent_history_text(
@@ -1191,30 +1612,28 @@ def recent_history_text(
         []
     )[-limit:]
 
-    lines = []
+    result = []
 
     for item in history:
 
-        role = item.get("role")
-
         label = (
             "Valideyn"
-            if role == "user"
+            if item.get("role") == "user"
             else "Leyla"
         )
 
-        lines.append(
+        result.append(
             f"{label}: "
             f"{item.get('content', '')}"
         )
 
     return "\n".join(
-        lines
+        result
     )
 
 
 # ============================================================
-# 13. LLM JSON HELPER
+# 14. JSON LLM
 # ============================================================
 
 def call_json_llm(
@@ -1225,26 +1644,37 @@ def call_json_llm(
 
     try:
 
-        response = client.chat.completions.create(
+        response = (
+            client
+            .chat.completions
+            .create(
 
-            model=MODEL_NAME,
+                model=MODEL_NAME,
 
-            temperature=temperature,
+                temperature=temperature,
 
-            response_format={
-                "type": "json_object"
-            },
-
-            messages=[
-                {
-                    "role": "system",
-                    "content": system_prompt
+                response_format={
+                    "type":
+                        "json_object"
                 },
-                {
-                    "role": "user",
-                    "content": user_prompt
-                }
-            ]
+
+                messages=[
+                    {
+                        "role":
+                            "system",
+
+                        "content":
+                            system_prompt
+                    },
+                    {
+                        "role":
+                            "user",
+
+                        "content":
+                            user_prompt
+                    }
+                ]
+            )
         )
 
         content = (
@@ -1269,60 +1699,163 @@ def call_json_llm(
 
 
 # ============================================================
-# 14. ANALYZER
+# 15. UNDERSTANDING / ANALYSIS
 # ============================================================
 
 ANALYSIS_SYSTEM_PROMPT = """
-Sən Junior Coaching üçün conversation-understanding modulusan.
+Sən Junior Coaching üçün conversation understanding modulusan.
 
-Sən istifadəçiyə cavab yazmırsan.
-Sən mesajı strukturlaşdırırsan.
+İstifadəçiyə cavab yazma.
+Yalnız strukturlaşdırılmış JSON qaytar.
 
-Prioritet:
-1. Safety / risk
+Əsas prinsip:
+
+UNDERSTAND
+-> EXTRACT
+-> REASON
+-> RESPONSE OBLIGATIONS
+-> NEXT STEP SIGNALS
+
+PRIORITET:
+1. Safety
 2. Primary intent
-3. Explicit corrections
-4. Explicit facts
-5. Current state
-6. Secondary intents
-7. Need reasoning
-8. Next-step signal
+3. Questions that require answers
+4. Corrections
+5. Explicit facts
+6. Current state
+7. Objections / ambiguity
+8. Need reasoning
+9. Sales readiness
 
-Qaydalar:
+MÜTLƏQ QAYDALAR:
 
-- Bir mesajda bir neçə məlumat varsa hamısını çıxar.
-- Bir mesajda bir neçə sual varsa hamısını çıxar.
-- Adı təxmin etmə.
-- "anasıyam", "mənə", "bu nömrə ilə", "maraqlanıram"
-  kimi ifadələri ad kimi götürmə.
-- "Mən Aygünəm" -> parent name Aygün.
-- "Adım İsmayıldır" -> parent name İsmayıl.
-- "İsmayıl bəy" -> parent name İsmayıl, title bəy.
-- Uşağın adını valideyn adı ilə qarışdırma.
-- "Tunar yox, Turandır" correction.
-- "16 yox, 15 yaşı var" correction.
-- "kiçik oğlum", "digər qızım" explicit yeni uşaq ola bilər.
-- Amma heç bir explicit ikinci uşaq siqnalı yoxdursa yeni child yaratma.
-- Davranış təsvirindən need çıxara bilərsən.
-- Diaqnoz qoyma.
-- "özgüvənsizlik", "məqsəd və gələcək", "məsuliyyətsizdir"
-  kimi ifadələr need ola bilər.
-- "başlamaq istəyirik", "qeydiyyata keçək",
-  "bizə uyğundur", "davam edək", "razıyıq"
-  ready-to-proceed siqnalıdır.
-- "cümə günü cavab verərəm", "sabah yoldaşımla danışacağam"
-  follow-up commitment ola bilər.
-- "harada", "qiymət", "hansı gün", "neçə dəqiqə"
-  ayrıca question topic-dir.
-- State recall:
-  "adımı necə qeyd etmisiniz?"
-  "uşağın yaşı neçə idi?"
-  "neçə övlad demişdim?"
-- Primary intent extraction faktından daha vacibdir.
-- Yeni məlumat əvvəlki hypothesis-i təkzib edirsə
-  contradicts_previous_hypothesis=true et.
-- Need artıq aydındırsa clarification_needed=false.
-- Minimum question -> maximum insight.
+1. Bir mesajda bir neçə məlumat varsa hamısını çıxar.
+
+2. Bir mesajda bir neçə sual varsa hamısını ayrıca questions
+və response_obligations daxilində göstər.
+
+3. State update primary intent-i əvəz etməsin.
+
+Misal:
+"Qızım 11 yaşındadır, 3 aya 12 olacaq. İndi başlaya bilər?"
+
+age=11 çıxar,
+amma primary_intent=eligibility olmalıdır.
+
+4. Adı təxmin etmə.
+
+"bu nömrə ilə əlaqə saxlayın"
+"anasıyam"
+"mənə"
+"maraqlanıram"
+
+ad deyil.
+
+5. Correction:
+
+"Tunar yox, Turandır"
+"16 yox, 15 yaşı var"
+
+köhnə dəyəri overwrite etməlidir.
+
+6. İkinci uşaq yalnız explicit signal ilə yaradılsın:
+
+"digər oğlum"
+"kiçik qızım"
+"ikinci uşağım"
+
+Amma "bir oğlum var", "ikinci uşaq yoxdur"
+-> yeni child YARATMA.
+
+7. CHILD RESISTANCE və SPOUSE SKEPTICISM AYRIDIR.
+
+Child resistance:
+"uşağım gəlmək istəmir"
+"oğlum istəmir"
+"məcbur etmək istəmirəm"
+
+Spouse skepticism:
+"yoldaşım belə proqramlara inanmır"
+"atası deyir bunlar lazım deyil"
+"həyat yoldaşım faydasını görmür"
+
+8. Decision dependency:
+"yoldaşımla danışmadan qərar verə bilmərəm"
+
+Bu avtomatik follow-up commitment deyil.
+Əvvəl blocker-in nə olduğunu anlamaq lazım ola bilər.
+
+9. Ambiguity:
+
+"gəlmək istəyirik amma alınmaya bilər"
+"bilmirəm alınar ya yox"
+
+Səbəb aydın deyilsə:
+ambiguity_present=true
+clarification_needed=true
+
+Ready-to-proceed etmə.
+
+10. Ready-to-proceed yalnız aydın high-intent olduqda:
+
+"başlamaq istəyirik"
+"qeydiyyata keçək"
+"hər şey aydındır, davam edək"
+"bizə uyğundur, başlayaq"
+
+Amma:
+"maraqlıdır, amma..."
+"yəqin gələcəyik"
+"alınmaya bilər"
+-> ready deyil.
+
+11. Need inference:
+
+Valideyn keyword deməsə belə davranış təsvirindən
+ehtiyacı strukturlaşdıra bilərsən.
+
+Amma diaqnoz qoyma.
+
+12. New evidence əvvəlki hypothesis ilə ziddirsə
+contradicts_previous_hypothesis=true.
+
+13. Need aydındırsa sırf discovery üçün əlavə sual istəmə.
+
+14. Ambiguous user expression varsa yanlış FAQ seçməkdənsə
+clarification ver.
+
+15. Primary intent və all_intents ayrı saxlanmalıdır.
+
+16. Hard-fact question topics:
+
+location
+schedule
+group_session_duration
+parent_call_duration
+child_intro_duration
+program_duration
+age_range
+price
+payment_model
+language
+format
+
+17. State recall ayrıca intent-dir.
+
+18. Response obligation — istifadəçiyə görünən cavabda
+mütləq nəzərə alınmalı elementdir.
+
+Məsələn:
+
+"Adım Günaydır, oğlum 14 yox 15 yaşındadır,
+055..., görüşlər harada və hansı gün olur?"
+
+obligations:
+- answer location
+- answer schedule
+
+Ad, age correction və phone state-də saxlanır,
+amma bunlar cavabın yerini tutmur.
 
 JSON-dan başqa heç nə yazma.
 """
@@ -1338,39 +1871,31 @@ def analyze_user_message(
         top_k=6
     )
 
-    faq_context = []
+    faq_context = [
 
-    for hit in faq_hits:
-
-        faq_context.append({
-
+        {
             "question":
-                hit["question"],
+                item["question"],
 
             "answer":
-                hit["answer"],
+                item["answer"],
 
             "score":
                 round(
-                    hit["score"],
+                    item["score"],
                     3
                 )
-        })
+        }
 
-    state = sanitize_state_for_llm(
-        lead
-    )
+        for item in faq_hits
+    ]
 
-    current_date = get_baku_time().strftime(
-        "%Y-%m-%d"
-    )
-
-    user_prompt = f"""
+    prompt = f"""
 CURRENT DATE:
-{current_date}
+{get_baku_time().strftime("%Y-%m-%d")}
 
-CURRENT STRUCTURED STATE:
-{json_dumps(state)}
+CURRENT STATE:
+{json_dumps(sanitize_state_for_llm(lead))}
 
 RECENT CONVERSATION:
 {recent_history_text(lead)}
@@ -1378,98 +1903,123 @@ RECENT CONVERSATION:
 CURRENT USER MESSAGE:
 {user_text}
 
-TOP KNOWLEDGE BASE CANDIDATES:
+RELEVANT KB CANDIDATES:
 {json_dumps(faq_context)}
 
-Bu JSON-u qaytar:
+Aşağıdakı strukturu qaytar:
 
 {{
-  "primary_intent": "...",
+    "primary_intent": "...",
 
-  "all_intents": [],
+    "all_intents": [],
 
-  "confidence": 0.0,
+    "confidence": 0.0,
 
-  "is_question": false,
+    "is_question": false,
 
-  "questions": [
-    {{
-      "topic": "...",
-      "question": "..."
-    }}
-  ],
+    "questions": [
+        {{
+            "topic": "...",
+            "question": "..."
+        }}
+    ],
 
-  "parent": {{
-    "name": null,
-    "title": null,
-    "phone": null
-  }},
+    "response_obligations": [
+        {{
+            "type": "answer_question|handle_objection|clarify|state_recall|acknowledge",
+            "topic": "...",
+            "priority": 1
+        }}
+    ],
 
-  "children": [
-    {{
-      "target": "active|new|unknown",
-      "name": null,
-      "age": null,
-      "need": null,
-      "need_tags": [],
-      "context": null,
-      "duration": null,
-      "impact": null,
-      "desired_outcome": null,
-      "willingness": null,
-      "explicit_new_child": false
-    }}
-  ],
+    "parent": {{
+        "name": null,
+        "title": null,
+        "phone": null
+    }},
 
-  "corrections": [
-    {{
-      "field": "parent_name|child_name|child_age|need|phone|other",
-      "old_value": null,
-      "new_value": null,
-      "child_reference": null
-    }}
-  ],
+    "children": [
+        {{
+            "target": "active|new|unknown",
+            "explicit_new_child": false,
+            "name": null,
+            "age": null,
+            "need": null,
+            "need_tags": [],
+            "context": null,
+            "duration": null,
+            "impact": null,
+            "desired_outcome": null,
+            "willingness": null
+        }}
+    ],
 
-  "need_analysis": {{
-    "need_is_clear": false,
-    "need_summary": null,
-    "need_tags": [],
-    "hypothesis": null,
-    "hypothesis_confidence": 0.0,
-    "contradicts_previous_hypothesis": false,
-    "clarification_needed": false,
-    "best_clarification_question": null,
-    "recommendation_signal": "personal_social|future_direction|mixed|unknown"
-  }},
+    "corrections": [
+        {{
+            "field": "parent_name|child_name|child_age|need|phone|other",
+            "old_value": null,
+            "new_value": null,
+            "child_reference": null
+        }}
+    ],
 
-  "ready_to_proceed": false,
+    "need_analysis": {{
+        "need_is_clear": false,
+        "need_summary": null,
+        "need_tags": [],
+        "hypothesis": null,
+        "hypothesis_confidence": 0.0,
+        "contradicts_previous_hypothesis": false,
+        "clarification_needed": false,
+        "best_clarification_question": null,
+        "recommendation_signal": "personal_social|future_direction|mixed|unknown"
+    }},
 
-  "child_intro_requested": false,
+    "objection": {{
+        "present": false,
+        "type": "child_resistance|spouse_skepticism|decision_dependency|price|schedule|logistics|trust|value|other|none",
+        "summary": null,
+        "clarification_needed": false,
+        "best_clarification_question": null
+    }},
 
-  "human_requested": false,
+    "ambiguity": {{
+        "present": false,
+        "summary": null,
+        "clarification_needed": false,
+        "best_clarification_question": null
+    }},
 
-  "clinical_or_safety_risk": false,
+    "ready_to_proceed": false,
 
-  "complaint": false,
+    "parent_call_completed": false,
 
-  "partnership": false,
+    "child_intro_requested": false,
 
-  "special_payment_request": false,
+    "human_requested": false,
 
-  "agreed_followup_at": null,
+    "clinical_or_safety_risk": false,
 
-  "preferred_contact_time": null,
+    "complaint": false,
 
-  "state_recall": {{
-    "requested": false,
-    "fields": []
-  }},
+    "partnership": false,
 
-  "conversation_act":
-    "greeting|question|answer|correction|objection|commitment|information|other"
+    "special_payment_request": false,
+
+    "agreed_followup_at": null,
+
+    "preferred_contact_time": null,
+
+    "state_recall": {{
+        "requested": false,
+        "fields": []
+    }},
+
+    "conversation_act":
+        "greeting|question|answer|correction|objection|commitment|information|other"
 }}
 
-primary_intent nümunələri:
+Primary intent nümunələri:
 
 greeting
 program_info
@@ -1479,9 +2029,12 @@ location
 schedule
 duration
 language
-child_resistance
 consultation
 provide_information
+child_resistance
+spouse_skepticism
+decision_dependency
+ambiguous_objection
 state_recall
 ready_to_proceed
 followup_commitment
@@ -1493,106 +2046,117 @@ special_payment
 registration
 other
 
-Məsələn istifadəçi deyirsə:
+Əgər istifadəçi:
 
-"Oğlum evdə rahat danışır,
-amma məktəbdə müəllim sual verəndə
-bildiyi halda əl qaldırmır.
-Bilmirəm özgüvənsizlikdir, yoxsa xarakteridir."
+"Yoldaşım belə proqramlara skeptik yanaşır.
+Deyir uşaq bunları böyüdükcə onsuz da öyrənəcək."
 
-Primary intent:
-consultation
+primary_intent = spouse_skepticism
 
-Need:
-məktəb mühitində özünüifadə / iştirak çətinliyi
+child_resistance YOX.
 
-Hypothesis:
-bu vəziyyət sosial mühitdə özünüifadə və ya
-situativ özgüvənlə əlaqəli ola bilər,
-amma bunun ümumi xarakter xüsusiyyəti olduğunu
-və ya problem olduğunu qəti demək olmaz.
+Əgər:
+
+"Proqram maraqlıdır, gəlmək də istəyirik,
+amma alınmaya bilər."
+
+ready_to_proceed=false
+primary_intent=ambiguous_objection
+ambiguity.present=true.
+
+Əgər:
+
+"Yoldaşımla danışmadan qərar verə bilmərəm."
+
+primary_intent=decision_dependency
+
+Əgər concrete followup date də deyirsə:
+"cümə günü cavab verəcəyəm"
+
+agreed_followup_at çıxar.
 
 Diaqnoz qoyma.
 """
 
     result = call_json_llm(
-
         ANALYSIS_SYSTEM_PROMPT,
-
-        user_prompt,
-
+        prompt,
         temperature=0
     )
 
-    if not result:
+    if result:
+        return result
 
-        return fallback_analysis(
-            user_text
-        )
-
-    return result
+    return fallback_analysis(
+        user_text
+    )
 
 
 # ============================================================
-# 15. FALLBACK ANALYZER
+# 16. FALLBACK ANALYSIS
 # ============================================================
 
 def fallback_analysis(
     user_text
 ):
 
-    normalized = normalize_text(
+    text = normalize_text(
         user_text
     )
 
-    intent = (
+    primary = (
         "provide_information"
     )
 
-    if normalized in {
+    if text in {
         "salam",
         "slm",
         "salamlar"
     }:
 
-        intent = "greeting"
+        primary = "greeting"
 
     elif any(
-        x in normalized
-        for x in [
-            "qiymet",
-            "ne qeder"
-        ]
-    ):
-
-        intent = "price"
-
-    elif any(
-        x in normalized
-        for x in [
-            "harada",
+        word in text
+        for word in [
             "unvan",
+            "harada",
             "adres",
             "mekan"
         ]
     ):
 
-        intent = "location"
+        primary = "location"
+
+    elif any(
+        word in text
+        for word in [
+            "qiymet",
+            "ne qeder"
+        ]
+    ):
+
+        primary = "price"
 
     return {
 
-        "primary_intent": intent,
+        "primary_intent":
+            primary,
 
-        "all_intents": [
-            intent
-        ],
+        "all_intents":
+            [primary],
 
-        "confidence": 0.4,
+        "confidence":
+            0.35,
 
         "is_question":
             "?" in user_text,
 
-        "questions": [],
+        "questions":
+            [],
+
+        "response_obligations":
+            [],
 
         "parent": {
             "name": None,
@@ -1600,9 +2164,11 @@ def fallback_analysis(
             "phone": None
         },
 
-        "children": [],
+        "children":
+            [],
 
-        "corrections": [],
+        "corrections":
+            [],
 
         "need_analysis": {
 
@@ -1619,7 +2185,7 @@ def fallback_analysis(
                 None,
 
             "hypothesis_confidence":
-                0.0,
+                0,
 
             "contradicts_previous_hypothesis":
                 False,
@@ -1634,7 +2200,43 @@ def fallback_analysis(
                 "unknown"
         },
 
+        "objection": {
+
+            "present":
+                False,
+
+            "type":
+                "none",
+
+            "summary":
+                None,
+
+            "clarification_needed":
+                False,
+
+            "best_clarification_question":
+                None
+        },
+
+        "ambiguity": {
+
+            "present":
+                False,
+
+            "summary":
+                None,
+
+            "clarification_needed":
+                False,
+
+            "best_clarification_question":
+                None
+        },
+
         "ready_to_proceed":
+            False,
+
+        "parent_call_completed":
             False,
 
         "child_intro_requested":
@@ -1672,7 +2274,7 @@ def fallback_analysis(
 
 
 # ============================================================
-# 16. CORRECTIONS
+# 17. APPLY CORRECTIONS
 # ============================================================
 
 def apply_corrections(
@@ -1680,15 +2282,13 @@ def apply_corrections(
     analysis
 ):
 
-    corrections = (
+    for correction in (
         analysis.get(
             "corrections",
             []
         )
         or []
-    )
-
-    for correction in corrections:
+    ):
 
         field = correction.get(
             "field"
@@ -1698,21 +2298,24 @@ def apply_corrections(
             "new_value"
         )
 
-        child_reference = correction.get(
+        reference = correction.get(
             "child_reference"
         )
 
-        if field == "parent_name":
+        if (
+            field == "parent_name"
+            and new_value
+        ):
 
-            if new_value:
+            lead[
+                "parent_name"
+            ] = compact_spaces(
+                new_value
+            )
 
-                lead[
-                    "parent_name"
-                ] = compact_spaces(
-                    new_value
-                )
+            continue
 
-        elif field == "phone":
+        if field == "phone":
 
             phone = normalize_phone(
                 new_value
@@ -1721,83 +2324,94 @@ def apply_corrections(
             if phone:
                 lead["phone"] = phone
 
-        elif field in {
+            continue
+
+        if field not in {
             "child_name",
             "child_age",
             "need"
         }:
 
-            target_index = None
+            continue
 
-            if child_reference:
+        child_index = None
 
-                target_index = (
-                    find_child_by_name(
-                        lead,
-                        child_reference
-                    )
+        if reference:
+
+            child_index = (
+                find_child_by_name(
+                    lead,
+                    reference
                 )
-
-            if target_index is None:
-
-                target_index = (
-                    lead.get(
-                        "active_child_index",
-                        0
-                    )
-                )
-
-            ensure_children(
-                lead
             )
 
-            child = lead[
-                "children"
-            ][target_index]
+        if child_index is None:
 
-            if field == "child_name":
+            child_index = (
+                lead.get(
+                    "active_child_index",
+                    0
+                )
+            )
 
-                if new_value:
+        ensure_children(
+            lead
+        )
 
-                    child[
-                        "name"
-                    ] = compact_spaces(
-                        new_value
-                    )
+        child = lead[
+            "children"
+        ][child_index]
 
-            elif field == "child_age":
+        if (
+            field == "child_name"
+            and new_value
+        ):
 
-                age = safe_int(
+            child["name"] = (
+                compact_spaces(
                     new_value
                 )
+            )
 
-                if age is not None:
+        elif field == "child_age":
 
-                    child[
-                        "age"
-                    ] = age
+            age = safe_int(
+                new_value
+            )
 
-            elif field == "need":
+            if age is not None:
 
-                if new_value:
+                child[
+                    "age"
+                ] = age
 
-                    child[
-                        "need"
-                    ] = compact_spaces(
-                        new_value
-                    )
+        elif (
+            field == "need"
+            and new_value
+        ):
 
-                    child[
-                        "hypothesis"
-                    ] = None
+            child["need"] = (
+                compact_spaces(
+                    new_value
+                )
+            )
 
-                    child[
-                        "hypothesis_confidence"
-                    ] = None
+            # New need invalidates old reasoning
+            child[
+                "hypothesis"
+            ] = None
 
-                    child[
-                        "recommended_path"
-                    ] = None
+            child[
+                "hypothesis_confidence"
+            ] = None
+
+            child[
+                "recommended_path"
+            ] = None
+
+            child[
+                "discovery_complete"
+            ] = False
 
     sync_legacy_fields(
         lead
@@ -1805,7 +2419,7 @@ def apply_corrections(
 
 
 # ============================================================
-# 17. APPLY FACTS
+# 18. APPLY PARENT FACTS
 # ============================================================
 
 def apply_parent_facts(
@@ -1821,13 +2435,52 @@ def apply_parent_facts(
         or {}
     )
 
-    parent_name = parent.get(
+    name = parent.get(
         "name"
     )
 
-    parent_title = parent.get(
-        "title"
+    if name:
+
+        invalid_names = {
+            "men",
+            "mene",
+            "ana",
+            "anasi",
+            "anasiyam",
+            "bu nomre",
+            "nomre",
+            "maraqlaniram",
+            "elaqe"
+        }
+
+        if (
+            normalize_text(name)
+            not in invalid_names
+        ):
+
+            lead[
+                "parent_name"
+            ] = compact_spaces(
+                name
+            )
+
+    title = normalize_text(
+        parent.get(
+            "title"
+        )
     )
+
+    if title == "bey":
+
+        lead[
+            "parent_title"
+        ] = "bəy"
+
+    elif title == "xanim":
+
+        lead[
+            "parent_title"
+        ] = "xanım"
 
     phone = normalize_phone(
         parent.get(
@@ -1835,60 +2488,21 @@ def apply_parent_facts(
         )
     )
 
-    if parent_name:
-
-        bad_names = {
-            "ana",
-            "anasi",
-            "anasiyam",
-            "mene",
-            "men",
-            "bu nomre",
-            "nomre",
-            "maraqlaniram"
-        }
-
-        normalized = normalize_text(
-            parent_name
-        )
-
-        if normalized not in bad_names:
-
-            lead[
-                "parent_name"
-            ] = compact_spaces(
-                parent_name
-            )
-
-    if parent_title:
-
-        norm_title = normalize_text(
-            parent_title
-        )
-
-        if norm_title == "bey":
-
-            lead[
-                "parent_title"
-            ] = "bəy"
-
-        elif norm_title == "xanim":
-
-            lead[
-                "parent_title"
-            ] = "xanım"
-
     if phone:
 
         lead["phone"] = phone
 
+
+# ============================================================
+# 19. APPLY CHILD FACTS
+# ============================================================
 
 def apply_children_facts(
     lead,
     analysis
 ):
 
-    extracted_children = (
+    extracted = (
         analysis.get(
             "children",
             []
@@ -1896,99 +2510,95 @@ def apply_children_facts(
         or []
     )
 
-    if not extracted_children:
-        return
-
     ensure_children(
         lead
     )
 
-    for item in extracted_children:
+    for incoming in extracted:
 
-        explicit_new = bool(
-            item.get(
-                "explicit_new_child"
-            )
+        name = incoming.get(
+            "name"
         )
 
-        target = item.get(
+        target = incoming.get(
             "target",
             "active"
         )
 
-        incoming_name = item.get(
-            "name"
+        explicit_new = bool(
+            incoming.get(
+                "explicit_new_child"
+            )
         )
 
-        child_index = None
+        index = None
 
-        if incoming_name:
+        if name:
 
-            child_index = (
+            index = (
                 find_child_by_name(
                     lead,
-                    incoming_name
+                    name
                 )
             )
 
         if (
-            child_index is None
+            index is None
             and
             (
                 explicit_new
-                or target == "new"
+                or
+                target == "new"
             )
         ):
 
-            child_index = create_new_child(
+            index = create_new_child(
                 lead
             )
 
-        if child_index is None:
+        if index is None:
 
-            child_index = lead.get(
+            index = lead.get(
                 "active_child_index",
                 0
             )
 
         child = lead[
             "children"
-        ][child_index]
+        ][index]
 
-        if incoming_name:
+        if name:
 
-            child[
-                "name"
-            ] = compact_spaces(
-                incoming_name
+            child["name"] = (
+                compact_spaces(
+                    name
+                )
             )
 
         age = safe_int(
-            item.get(
+            incoming.get(
                 "age"
             )
         )
 
         if age is not None:
 
-            child[
-                "age"
-            ] = age
+            child["age"] = age
 
-        need = item.get(
+        need = incoming.get(
             "need"
         )
 
         if need:
 
-            child[
-                "need"
-            ] = compact_spaces(
-                need
+            child["need"] = (
+                compact_spaces(
+                    need
+                )
             )
 
         tags = (
-            item.get(
+            incoming.get(
                 "need_tags",
                 []
             )
@@ -2021,25 +2631,26 @@ def apply_children_facts(
             "desired_outcome"
         ]:
 
-            value = item.get(
+            value = incoming.get(
                 field
             )
 
             if value:
 
-                child[
-                    field
-                ] = compact_spaces(
-                    value
+                child[field] = (
+                    compact_spaces(
+                        value
+                    )
                 )
 
-        willingness = item.get(
+        willingness = incoming.get(
             "willingness"
         )
 
         if (
             willingness
-            in CHILD_WILLINGNESS_VALUES
+            in
+            CHILD_WILLINGNESS_VALUES
         ):
 
             child[
@@ -2048,12 +2659,16 @@ def apply_children_facts(
 
         lead[
             "active_child_index"
-        ] = child_index
+        ] = index
 
     sync_legacy_fields(
         lead
     )
 
+
+# ============================================================
+# 20. APPLY REASONING
+# ============================================================
 
 def apply_need_analysis(
     lead,
@@ -2072,20 +2687,41 @@ def apply_need_analysis(
         lead
     )
 
-    summary = need_analysis.get(
-        "need_summary"
-    )
-
     if (
-        summary
-        and
-        not child.get("need")
+        need_analysis.get(
+            "contradicts_previous_hypothesis"
+        )
     ):
 
         child[
-            "need"
-        ] = compact_spaces(
-            summary
+            "hypothesis"
+        ] = None
+
+        child[
+            "hypothesis_confidence"
+        ] = None
+
+        child[
+            "recommended_path"
+        ] = None
+
+        child[
+            "discovery_complete"
+        ] = False
+
+    need_summary = (
+        need_analysis.get(
+            "need_summary"
+        )
+    )
+
+    if need_summary:
+
+        # Updated contextual need may replace previous simplistic need
+        child["need"] = (
+            compact_spaces(
+                need_summary
+            )
         )
 
     tags = (
@@ -2115,26 +2751,6 @@ def apply_need_analysis(
             existing
         )
 
-    contradiction = bool(
-        need_analysis.get(
-            "contradicts_previous_hypothesis"
-        )
-    )
-
-    if contradiction:
-
-        child[
-            "hypothesis"
-        ] = None
-
-        child[
-            "hypothesis_confidence"
-        ] = None
-
-        child[
-            "recommended_path"
-        ] = None
-
     hypothesis = (
         need_analysis.get(
             "hypothesis"
@@ -2157,6 +2773,17 @@ def apply_need_analysis(
             )
         )
 
+    signal = (
+        need_analysis.get(
+            "recommendation_signal",
+            "unknown"
+        )
+    )
+
+    child[
+        "recommendation_signal"
+    ] = signal
+
     if need_analysis.get(
         "need_is_clear"
     ):
@@ -2170,38 +2797,100 @@ def apply_need_analysis(
     )
 
 
-def apply_other_facts(
+# ============================================================
+# 21. APPLY ORCHESTRATION SIGNALS
+# ============================================================
+
+def apply_orchestration_signals(
     lead,
     analysis
 ):
 
-    preferred_time = (
+    primary = analysis.get(
+        "primary_intent"
+    )
+
+    lead[
+        "primary_intent"
+    ] = primary
+
+    lead[
+        "_last_intent"
+    ] = primary
+
+    lead[
+        "_last_confidence"
+    ] = analysis.get(
+        "confidence"
+    )
+
+    lead[
+        "all_intents"
+    ] = (
         analysis.get(
-            "preferred_contact_time"
+            "all_intents",
+            []
+        )
+        or []
+    )
+
+    lead[
+        "response_obligations"
+    ] = (
+        analysis.get(
+            "response_obligations",
+            []
+        )
+        or []
+    )
+
+    objection = (
+        analysis.get(
+            "objection",
+            {}
+        )
+        or {}
+    )
+
+    if objection.get(
+        "present"
+    ):
+
+        lead[
+            "objection_type"
+        ] = objection.get(
+            "type"
+        )
+
+        lead[
+            "decision_blocker"
+        ] = objection.get(
+            "summary"
+        )
+
+    ambiguity = (
+        analysis.get(
+            "ambiguity",
+            {}
+        )
+        or {}
+    )
+
+    lead[
+        "ambiguity_present"
+    ] = bool(
+        ambiguity.get(
+            "present"
         )
     )
 
-    if preferred_time:
-
-        lead[
-            "preferred_call_time"
-        ] = compact_spaces(
-            preferred_time
-        )
-
-    agreed_followup = (
-        analysis.get(
-            "agreed_followup_at"
+    lead[
+        "clarification_needed"
+    ] = bool(
+        ambiguity.get(
+            "clarification_needed"
         )
     )
-
-    if agreed_followup:
-
-        lead[
-            "agreed_followup_at"
-        ] = compact_spaces(
-            agreed_followup
-        )
 
     if analysis.get(
         "ready_to_proceed"
@@ -2215,39 +2904,70 @@ def apply_other_facts(
             "sales_stage"
         ] = "READY_TO_PROCEED"
 
-    lead[
-        "primary_intent"
-    ] = analysis.get(
-        "primary_intent"
+    if analysis.get(
+        "parent_call_completed"
+    ):
+
+        lead[
+            "parent_call_status"
+        ] = "COMPLETED"
+
+    followup = analysis.get(
+        "agreed_followup_at"
     )
 
-    lead[
-        "_last_intent"
-    ] = analysis.get(
-        "primary_intent"
-    )
+    if followup:
 
-    lead[
-        "_last_primary_intent"
-    ] = analysis.get(
-        "primary_intent"
-    )
-
-    lead[
-        "_last_confidence"
-    ] = analysis.get(
-        "confidence"
-    )
-
-    lead[
-        "last_intents"
-    ] = (
-        analysis.get(
-            "all_intents",
-            []
+        lead[
+            "agreed_followup_at"
+        ] = compact_spaces(
+            followup
         )
-        or []
+
+    preferred_time = (
+        analysis.get(
+            "preferred_contact_time"
+        )
     )
+
+    if preferred_time:
+
+        # IMPORTANT:
+        # By default this is parent call time,
+        # unless we're explicitly booking child intro.
+        if (
+            lead.get(
+                "ready_to_proceed"
+            )
+            and
+            lead.get(
+                "child_intro_status"
+            )
+            in {
+                "PENDING",
+                "NOT_STARTED"
+            }
+        ):
+
+            lead[
+                "child_intro_time"
+            ] = compact_spaces(
+                preferred_time
+            )
+
+        else:
+
+            lead[
+                "parent_call_time"
+            ] = compact_spaces(
+                preferred_time
+            )
+
+            lead[
+                "preferred_call_time"
+            ] = compact_spaces(
+                preferred_time
+            )
 
 
 def apply_analysis_to_state(
@@ -2275,7 +2995,7 @@ def apply_analysis_to_state(
         analysis
     )
 
-    apply_other_facts(
+    apply_orchestration_signals(
         lead,
         analysis
     )
@@ -2286,7 +3006,7 @@ def apply_analysis_to_state(
 
 
 # ============================================================
-# 18. BUSINESS RULE ENGINE
+# 22. AGE RULE
 # ============================================================
 
 def evaluate_age_rule(
@@ -2299,41 +3019,34 @@ def evaluate_age_rule(
 
     if age is None:
 
-        return {
-            "status": "UNKNOWN",
-            "path": None
-        }
+        return "UNKNOWN"
 
     if 12 <= age <= 18:
 
-        return {
-            "status": "FIT_RANGE",
-            "path": "GROUP"
-        }
+        return "GROUP_RANGE"
 
     if age == 11:
 
-        return {
-            "status": "SPECIALIST_REVIEW",
-            "path": "SPECIALIST_REVIEW"
-        }
+        return (
+            "SPECIALIST_REVIEW"
+        )
 
     if age >= 19:
 
-        return {
-            "status": "INDIVIDUAL",
-            "path": "INDIVIDUAL"
-        }
+        return "INDIVIDUAL"
 
-    return {
-        "status": "NOT_FIT_GROUP",
-        "path": "SPECIALIST_REVIEW"
-    }
+    return "NOT_STANDARD_GROUP"
 
+
+# ============================================================
+# 23. PRELIMINARY RECOMMENDATION
+#
+# This is NOT a hard business fact.
+# It is a preliminary reasoning result.
+# ============================================================
 
 def calculate_recommendation(
-    lead,
-    analysis=None
+    lead
 ):
 
     child = get_active_child(
@@ -2344,80 +3057,42 @@ def calculate_recommendation(
         child
     )
 
-    if (
-        age_rule[
-            "status"
-        ]
-        == "INDIVIDUAL"
-    ):
+    if age_rule == "INDIVIDUAL":
 
-        child[
-            "recommended_path"
-        ] = "INDIVIDUAL"
+        recommendation = (
+            "INDIVIDUAL"
+        )
 
-        lead[
-            "recommended_path"
-        ] = "INDIVIDUAL"
-
-        return "INDIVIDUAL"
-
-    if age_rule[
-        "status"
-    ] in {
+    elif age_rule in {
         "SPECIALIST_REVIEW",
-        "NOT_FIT_GROUP"
+        "NOT_STANDARD_GROUP"
     }:
 
-        child[
-            "recommended_path"
-        ] = "SPECIALIST_REVIEW"
-
-        lead[
-            "recommended_path"
-        ] = "SPECIALIST_REVIEW"
-
-        return "SPECIALIST_REVIEW"
-
-    signal = "unknown"
-
-    if analysis:
-
-        need_analysis = (
-            analysis.get(
-                "need_analysis",
-                {}
-            )
-            or {}
-        )
-
-        signal = (
-            need_analysis.get(
-                "recommendation_signal",
-                "unknown"
-            )
-        )
-
-    if signal == "personal_social":
-
         recommendation = (
-            "5_MONTH"
+            "SPECIALIST_REVIEW"
         )
-
-    elif signal == "future_direction":
-
-        recommendation = (
-            "9_MONTH"
-        )
-
-    elif signal == "mixed":
-
-        recommendation = None
 
     else:
 
-        recommendation = child.get(
-            "recommended_path"
+        signal = child.get(
+            "recommendation_signal"
         )
+
+        if signal == "personal_social":
+
+            recommendation = (
+                "FOUNDATION_LEADERSHIP"
+            )
+
+        elif signal == "future_direction":
+
+            recommendation = (
+                "FULL_PATH"
+            )
+
+        else:
+
+            recommendation = None
 
     child[
         "recommended_path"
@@ -2431,7 +3106,7 @@ def calculate_recommendation(
 
 
 # ============================================================
-# 19. HUMAN OWNERSHIP
+# 24. HUMAN OWNERSHIP
 # ============================================================
 
 def human_owns_lead(
@@ -2441,9 +3116,7 @@ def human_owns_lead(
     return (
         lead.get("owner")
         == "HUMAN"
-
         or
-
         lead.get(
             "handoff_status"
         )
@@ -2452,15 +3125,12 @@ def human_owns_lead(
 
 
 def mark_handoff(
-    lead,
-    requested=True
+    lead
 ):
 
-    if requested:
-
-        lead[
-            "handoff_status"
-        ] = "requested"
+    lead[
+        "handoff_status"
+    ] = "requested"
 
     lead[
         "sales_stage"
@@ -2476,7 +3146,7 @@ def mark_handoff(
 
 
 # ============================================================
-# 20. STATE RECALL
+# 25. STATE RECALL
 # ============================================================
 
 def answer_state_recall(
@@ -2490,20 +3160,22 @@ def answer_state_recall(
         lead
     )
 
-    responses = []
-
-    fields_norm = {
-        normalize_text(x)
-        for x in fields
+    normalized_fields = {
+        normalize_text(
+            field
+        )
+        for field in fields
     }
 
-    if not fields_norm:
+    parts = []
+
+    if not normalized_fields:
 
         if lead.get(
             "parent_name"
         ):
 
-            responses.append(
+            parts.append(
                 f"Adınızı {lead['parent_name']} kimi qeyd etmişəm."
             )
 
@@ -2511,15 +3183,16 @@ def answer_state_recall(
             "name"
         ):
 
-            responses.append(
+            parts.append(
                 f"Övladınızın adı {child['name']}-dır."
             )
 
-        if child.get(
-            "age"
-        ) is not None:
+        if (
+            child.get("age")
+            is not None
+        ):
 
-            responses.append(
+            parts.append(
                 f"Yaşı {child['age']} olaraq qeyd olunub."
             )
 
@@ -2527,220 +3200,289 @@ def answer_state_recall(
             "need"
         ):
 
-            responses.append(
+            parts.append(
                 f"Əsas ehtiyac kimi “{child['need']}” qeyd olunub."
             )
 
-        if responses:
-
-            return " ".join(
-                responses
-            )
-
         return (
-            "Hazırda bu məlumatlar tam qeyd olunmayıb."
+            " ".join(parts)
+            if parts
+            else
+            "Bu məlumatlar hələ tam qeyd olunmayıb."
         )
 
     if any(
-        "parent" in x
-        or x == "ad"
-        for x in fields_norm
+        value in normalized_fields
+        for value in [
+            "parent_name",
+            "ad",
+            "valideyn adi"
+        ]
     ):
 
         if lead.get(
             "parent_name"
         ):
 
-            responses.append(
+            parts.append(
                 f"Adınızı {lead['parent_name']} kimi qeyd etmişəm."
             )
 
         else:
 
-            responses.append(
+            parts.append(
                 "Adınız hələ qeyd olunmayıb."
             )
 
     if any(
-        "child_name" in x
-        or "usaq adi" in x
-        or "ovladin adi" in x
-        for x in fields_norm
+        value in normalized_fields
+        for value in [
+            "child_name",
+            "usaq adi",
+            "ovlad adi"
+        ]
     ):
 
         if child.get(
             "name"
         ):
 
-            responses.append(
+            parts.append(
                 f"Övladınızın adı {child['name']}-dır."
             )
 
         else:
 
-            responses.append(
+            parts.append(
                 "Övladınızın adı hələ qeyd olunmayıb."
             )
 
     if any(
-        "age" in x
-        or "yas" in x
-        for x in fields_norm
+        value in normalized_fields
+        for value in [
+            "age",
+            "yas",
+            "child_age"
+        ]
     ):
 
-        if child.get(
-            "age"
-        ) is not None:
+        if (
+            child.get("age")
+            is not None
+        ):
 
-            responses.append(
+            parts.append(
                 f"Yaşını {child['age']} olaraq qeyd etmişəm."
             )
 
         else:
 
-            responses.append(
+            parts.append(
                 "Yaşı hələ qeyd olunmayıb."
             )
 
     if any(
-        "need" in x
-        or "concern" in x
-        or "ehtiyac" in x
-        or "narahat" in x
-        for x in fields_norm
+        value in normalized_fields
+        for value in [
+            "need",
+            "ehtiyac",
+            "main_concern",
+            "narahatliq"
+        ]
     ):
 
         if child.get(
             "need"
         ):
 
-            responses.append(
+            parts.append(
                 f"Əsas ehtiyac kimi “{child['need']}” qeyd olunub."
             )
 
         else:
 
-            responses.append(
+            parts.append(
                 "Əsas ehtiyac hələ qeyd olunmayıb."
             )
 
     if any(
-        "child_count" in x
-        or "usaq sayi" in x
-        or "ovlad sayi" in x
-        for x in fields_norm
+        value in normalized_fields
+        for value in [
+            "child_count",
+            "usaq sayi",
+            "ovlad sayi"
+        ]
     ):
 
-        count = len([
-            c
-            for c in lead.get(
+        known_children = [
+
+            item
+
+            for item in lead.get(
                 "children",
                 []
             )
+
             if (
-                c.get("name")
-                or c.get("age") is not None
-                or c.get("need")
+                item.get("name")
+                or
+                item.get("age") is not None
+                or
+                item.get("need")
             )
-        ])
-
-        if count:
-
-            responses.append(
-                f"Hazırda {count} övlad üzrə məlumat qeyd olunub."
-            )
-
-        else:
-
-            responses.append(
-                "Övlad sayı barədə dəqiq məlumat hələ yoxdur."
-            )
-
-    return " ".join(
-        responses
-    )
-
-
-# ============================================================
-# 21. BUSINESS FACT ANSWERS
-# ============================================================
-
-def answer_location():
-
-    return (
-        "Görüşlər "
-        + BUSINESS_FACTS[
-            "address"
         ]
-        + " ünvanında keçirilir."
-    )
 
-
-def answer_schedule():
-
-    return (
-        "Qrup görüşləri "
-        + BUSINESS_FACTS[
-            "frequency"
-        ]
-        + " keçirilir. Dəqiq tarix və saatlar "
-          "əvvəlcədən valideynlərlə paylaşılır."
-    )
-
-
-def answer_duration():
-
-    return (
-        "Qrup görüşü "
-        + BUSINESS_FACTS[
-            "group_session_duration"
-        ]
-        + " davam edir. Valideynlə ilkin tanışlıq zəngi "
-        "isə adətən "
-        + BUSINESS_FACTS[
-            "parent_initial_call_duration"
-        ]
-        + " olur."
-    )
-
-
-def answer_language():
-
-    return BUSINESS_FACTS[
-        "language"
-    ]
-
-
-def answer_price(
-    lead
-):
-
-    child = get_active_child(
-        lead
-    )
-
-    age = child.get(
-        "age"
-    )
-
-    if (
-        age is not None
-        and age >= 19
-    ):
-
-        return (
-            "19 yaş və yuxarı üçün fərdi coaching "
-            f"{BUSINESS_FACTS['individual_coaching_duration']} "
-            f"davam edir və bir görüş "
-            f"{BUSINESS_FACTS['individual_coaching_price']} AZN-dir."
+        parts.append(
+            f"Hazırda {len(known_children)} övlad üzrə məlumat qeyd olunub."
         )
 
-    return (
-        "Qrup proqramında ödəniş modul üzrə edilir. "
-        "Modulların dəqiq məbləğləri təsdiqlənmiş source-da "
-        "olmadığı üçün sizə rəqəm uydurmaq istəmirəm."
+    return " ".join(
+        parts
     )
 
+
+# ============================================================
+# 26. HARD FACT ANSWERS
+#
+# These do NOT rely on LLM generation.
+# ============================================================
+
+def hard_fact_answer(
+    topic,
+    lead=None
+):
+
+    if topic == "location":
+
+        return (
+            "Görüşlər "
+            + BUSINESS_FACTS[
+                "address"
+            ]
+            + " ünvanında keçirilir."
+        )
+
+    if topic == "schedule":
+
+        return (
+            "Qrup görüşləri "
+            + BUSINESS_FACTS[
+                "group_frequency"
+            ]
+            + " keçirilir. Dəqiq tarix və saatlar "
+              "əvvəlcədən paylaşılır."
+        )
+
+    if topic == "group_session_duration":
+
+        return (
+            "Bir qrup görüşü "
+            + BUSINESS_FACTS[
+                "group_session_duration"
+            ]
+            + " davam edir."
+        )
+
+    if topic == "parent_call_duration":
+
+        return (
+            "Valideynlə ilkin telefon danışığı adətən "
+            + BUSINESS_FACTS[
+                "parent_initial_call_duration"
+            ]
+            + " davam edir."
+        )
+
+    if topic == "child_intro_duration":
+
+        return (
+            "Övladla görüntülü tanışlıq adətən "
+            + BUSINESS_FACTS[
+                "child_intro_duration"
+            ]
+            + " davam edir."
+        )
+
+    if topic == "program_duration":
+
+        return (
+            "Tam proqram "
+            + BUSINESS_FACTS[
+                "full_program_duration"
+            ]
+            + " formatındadır."
+        )
+
+    if topic == "age_range":
+
+        return (
+            "Junior Coaching-in əsas qrup proqramı "
+            f"{BUSINESS_FACTS['age_min']}–"
+            f"{BUSINESS_FACTS['age_max']} yaş üçündür."
+        )
+
+    if topic == "language":
+
+        return (
+            BUSINESS_FACTS[
+                "language"
+            ]
+        )
+
+    if topic == "format":
+
+        return (
+            BUSINESS_FACTS[
+                "format"
+            ]
+        )
+
+    if topic == "payment_model":
+
+        return (
+            "Qrup proqramında ödəniş modul üzrə edilir. "
+            "Dəqiq modul məbləğləri təsdiqlənmiş source-da "
+            "olmadığı üçün rəqəm demirəm."
+        )
+
+    if topic == "price":
+
+        child = (
+            get_active_child(lead)
+            if lead is not None
+            else None
+        )
+
+        age = (
+            child.get("age")
+            if child
+            else None
+        )
+
+        if (
+            age is not None
+            and age >= 19
+        ):
+
+            return (
+                "Fərdi coaching görüşü "
+                f"{BUSINESS_FACTS['individual_coaching_duration']} "
+                "davam edir və bir görüş "
+                f"{BUSINESS_FACTS['individual_coaching_price']} AZN-dir."
+            )
+
+        return (
+            "Qrup proqramının dəqiq modul məbləğləri "
+            "hazırda təsdiqlənmiş source-da olmadığı üçün "
+            "rəqəm uydurmaq istəmirəm."
+        )
+
+    return None
+
+
+# ============================================================
+# 27. ELIGIBILITY
+# ============================================================
 
 def answer_eligibility(
     lead
@@ -2757,211 +3499,288 @@ def answer_eligibility(
     if age is None:
 
         return (
-            "Junior Coaching-in əsas qrupu 12–18 yaş üçündür."
+            "Junior Coaching-in əsas qrup proqramı "
+            "12–18 yaş üçündür."
         )
 
     if 12 <= age <= 18:
 
         return (
             f"{age} yaş Junior Coaching-in "
-            "12–18 yaş qrupuna uyğundur."
+            "əsas yaş aralığına uyğundur."
         )
 
     if age == 11:
 
         return (
-            "12 yaşa yaxın olduğu üçün avtomatik "
-            "uyğun deyil demirik. "
-            "Qısa görüntülü tanışlıqdan sonra "
-            "mütəxəssis qrupa uyğunluğu qiymətləndirə bilər."
+            "Hazırda əsas qrup 12–18 yaş üçündür. "
+            "12 yaşa çox yaxın olduğu üçün uyğunluğu "
+            "mütəxəssislə ayrıca dəqiqləşdirmək olar."
         )
 
     if age >= 19:
 
         return (
-            "Junior Coaching-in qrup formatı "
-            "12–18 yaş üçündür. "
+            "Qrup proqramı 12–18 yaş üçündür. "
             "19 yaş və yuxarı üçün fərdi coaching "
-            "daha uyğun seçimdir."
+            "daha uyğun istiqamətdir."
         )
 
     return (
-        "Əsas Junior Coaching qrupu 12–18 yaş üçündür. "
-        "Bu yaş üçün uyğunluğu mütəxəssis ayrıca "
-        "qiymətləndirməlidir."
+        "Bu yaş əsas Junior Coaching qrupunun "
+        "standart yaş aralığından kənardır. "
+        "Uyğunluğu mütəxəssislə ayrıca dəqiqləşdirmək lazımdır."
     )
 
 
 # ============================================================
-# 22. READY TO PROCEED
+# 28. MULTI-QUESTION HARD FACT COVERAGE
 # ============================================================
 
-def handle_ready_to_proceed(
+def build_hard_fact_answers_from_analysis(
+    analysis,
     lead
 ):
 
-    lead[
-        "ready_to_proceed"
-    ] = True
+    answers = []
 
-    lead[
-        "sales_stage"
-    ] = "CHILD_INTRO_PENDING"
+    handled_topics = set()
 
-    lead[
-        "child_intro_status"
-    ] = "PENDING"
+    topic_map = {
 
-    lead[
-        "next_action"
-    ] = "BOOK_CHILD_INTRO"
+        "location":
+            "location",
 
-    if lead.get(
-        "preferred_call_time"
-    ):
+        "schedule":
+            "schedule",
 
-        lead[
-            "child_intro_status"
-        ] = "BOOKED"
+        "group_session_duration":
+            "group_session_duration",
 
-        lead[
-            "sales_stage"
-        ] = "CHILD_INTRO_BOOKED"
+        "parent_call_duration":
+            "parent_call_duration",
 
-        lead[
-            "next_action"
-        ] = "CHILD_INTRO"
+        "child_intro_duration":
+            "child_intro_duration",
 
-        lead[
-            "status"
-        ] = "CALL_REQUESTED"
+        "program_duration":
+            "program_duration",
 
-        return (
-            "Əla. Növbəti addım övladınızla "
-            "qısa görüntülü tanışlıqdır. "
-            f"{lead['preferred_call_time']} üçün "
-            "müraciətinizi qeyd etdim ✅"
+        "age_range":
+            "age_range",
+
+        "price":
+            "price",
+
+        "payment_model":
+            "payment_model",
+
+        "language":
+            "language",
+
+        "format":
+            "format"
+    }
+
+    obligations = (
+        analysis.get(
+            "response_obligations",
+            []
+        )
+        or []
+    )
+
+    questions = (
+        analysis.get(
+            "questions",
+            []
+        )
+        or []
+    )
+
+    topics = []
+
+    for obligation in obligations:
+
+        if (
+            obligation.get(
+                "type"
+            )
+            == "answer_question"
+        ):
+
+            topics.append(
+                obligation.get(
+                    "topic"
+                )
+            )
+
+    for question in questions:
+
+        topics.append(
+            question.get(
+                "topic"
+            )
         )
 
-    return (
-        "Əla. Növbəti addım övladınızla "
-        "qısa görüntülü tanışlıqdır. "
-        "Sizə uyğun gün və saat aralığını yaza bilərsiniz?"
-    )
+    for topic in topics:
+
+        mapped = topic_map.get(
+            topic
+        )
+
+        if not mapped:
+            continue
+
+        if mapped in handled_topics:
+            continue
+
+        answer = hard_fact_answer(
+            mapped,
+            lead
+        )
+
+        if answer:
+
+            answers.append(
+                answer
+            )
+
+            handled_topics.add(
+                mapped
+            )
+
+    return answers
 
 
 # ============================================================
-# 23. RESPONSE GENERATOR
+# 29. CONTEXTUAL ANSWER GENERATOR
 # ============================================================
 
 RESPONSE_SYSTEM_PROMPT = """
-Sən Junior Coaching üzrə virtual bələdçi və
-AI Sales Assistant Leylasan.
+Sən Junior Coaching üzrə AI Sales Assistant və virtual bələdçisən.
 
-FAQ bot kimi yox, trusted advisor kimi davran.
+FAQ bot deyilsən.
 
-Prioritet:
-1. Safety / Business Rules
-2. Primary intent
-3. Current structured state
-4. Conversation history
-5. Knowledge base
-6. Contextual reasoning
-7. Next step
+Sənin əsas işin:
+- istifadəçini anlamaq
+- situasiyanı kontekstdən qiymətləndirmək
+- diaqnoz qoymamaq
+- istifadəçinin sual və etirazlarına cavab vermək
+- sonra yalnız real funksiyası varsa next-step təklif etmək
 
-Qaydalar:
+HARD FACT QAYDASI:
 
-- Əvvəl istifadəçinin əsas sualını cavablandır.
-- State update-i lazımsız şəkildə istifadəçiyə demə.
-- Bir mesajda bir neçə sual varsa hamısını nəzərə al.
-- Knowledge base-də olmayan biznes faktını uydurma.
-- Qiymət, endirim, tarix, kampaniya uydurma.
-- Correction varsa yeni məlumatı əsas götür.
-- Yeni məlumat əvvəlki hypothesis-i dəyişirsə
-  köhnə hypothesis-i təkrarlama.
-- Diaqnoz qoyma.
-- "Bu mütləq özgüvənsizlikdir" demə.
-- Ehtimal dili istifadə et:
-  "əlaqəli ola bilər",
-  "bu situativ görünür",
-  "tək bu məlumatla qəti demək olmaz".
-- Valideynin konkret ehtiyacı ilə proqramı əlaqələndir.
-- Generic bacarıqlar siyahısını səbəbsiz sadalama.
-- Need aydın deyilsə maksimum 1 qısa clarification sualı.
-- Need aydındırsa discovery-ni sırf tamamlamaq üçün uzatma.
-- Ready lead-dirsə discovery yoxdur.
-- Uşaq müqavimətində:
-  səbəbi anla -> məcbur etmə ->
-  uşaq razıdırsa qısa görüntülü tanışlıq.
-- Eyni cavabı sözbəsöz təkrarlama.
+Əgər sənə APPROVED HARD FACTS verilibsə yalnız onlardan istifadə et.
+
+Yaş aralığı, qiymət, müddət, ünvan,
+görüş sayı, görüş günü, ödəniş modeli kimi
+faktları özündən yaratma.
+
+"5 aylıq proqramdır"
+kimi sərt fakt yaratma.
+
+FOUNDATION + LEADERSHIP və ya full-path yalnız
+ilkin recommendation kimi ifadə edilə bilər,
+business fact kimi yox.
+
+OBJECTION:
+
+Child resistance və spouse skepticism fərqlidir.
+
+Spouse skepticism:
+valideynin/yoldaşın proqramın dəyərinə şübhəsidir.
+
+Child resistance:
+uşağın özü iştirak etmək istəmir.
+
+Decision dependency:
+valideyn qərar üçün həyat yoldaşı ilə danışmalıdır.
+Burada lead-i dərhal buraxma.
+Əgər blocker aydın deyilsə maksimum 1 qısa sualla
+nəyi müzakirə etmək istədiyini dəqiqləşdir.
+
+AMBIGUITY:
+
+Əgər "alınmaya bilər", "bilmirəm mümkün olar ya yox"
+kimi qeyri-müəyyənlik varsa səbəbi təxmin etmə.
+1 qısa clarification ver.
+
+CONSULTATION:
+
+Valideyn davranış təsvir edirsə keyword axtarma.
+Davranışları əlaqələndir.
+
+Amma:
+"bu, mütləq özgüvənsizlikdir"
+demə.
+
+Belə de:
+"bu, konkret mühitdə özünüifadə və özünəinamla
+əlaqəli ola bilər"
+və ya
+"tək bu məlumatla qəti nəticə demək olmaz".
+
+RESPONSE STYLE:
+
+- Default 2–4 qısa cümlə.
+- Sadə cavab 20–40 söz.
+- İzahlı cavab mümkün qədər 50–70 sözü keçməsin.
+- WhatsApp / Instagram üslubu.
+- Uzun esse yazma.
+- Eyni fikri təkrar etmə.
 - Hər cavabın sonunda avtomatik sual vermə.
+- Maksimum 1 məqsədli sual.
 
-Üslub:
-- 2–4 qısa cümlə
-- sadə FAQ 20–40 söz
-- izahlı cavab adətən 50–70 sözdən çox olmasın
-- WhatsApp/Instagram tərzi
-- professional və təbii
+STATE:
 
-5/9 aylıq yol:
-- şəxsi/sosial bacarıqlar -> ilkin 5 aylıq Foundation + Leadership
-- gələcək istiqaməti, qərarvermə, potensialın praktik nəticəsi -> 9 aylıq yol
-- bu sərt keyword mapping deyil
-- qarışıq ehtiyac -> 1 clarification
-- yekun fit mütəxəssis tərəfindən görüntülü tanışlıqdan sonra təsdiqlənir
+Artıq verilmiş məlumatı yenidən soruşma.
+State update istifadəçiyə cavab əvəzi kimi göstərilməməlidir.
 
-Yalnız final cavabı yaz.
+Sən yalnız final cavab mətnini yaz.
 """
 
 
 def generate_contextual_response(
     user_text,
     lead,
-    analysis,
-    include_next_step=True
+    analysis
 ):
 
-    faq_hits = retrieve_similar(
+    hits = retrieve_similar(
         user_text,
-        top_k=7
+        top_k=6
     )
 
-    kb_context = []
+    kb_context = [
 
-    for hit in faq_hits:
+        {
+            "question":
+                hit["question"],
 
-        if hit[
-            "score"
-        ] >= 0.10:
+            "answer":
+                hit["answer"],
 
-            kb_context.append({
+            "score":
+                round(
+                    hit["score"],
+                    3
+                )
+        }
 
-                "question":
-                    hit["question"],
+        for hit in hits
 
-                "answer":
-                    hit["answer"],
-
-                "score":
-                    round(
-                        hit["score"],
-                        3
-                    )
-            })
-
-    child = get_active_child(
-        lead
-    )
+        if hit["score"] >= 0.10
+    ]
 
     recommendation = (
         calculate_recommendation(
-            lead,
-            analysis
+            lead
         )
     )
 
     prompt = f"""
-CURRENT USER MESSAGE:
+USER MESSAGE:
 {user_text}
 
 PRIMARY INTENT:
@@ -2970,78 +3789,82 @@ PRIMARY INTENT:
 ALL INTENTS:
 {json_dumps(analysis.get("all_intents", []))}
 
+RESPONSE OBLIGATIONS:
+{json_dumps(analysis.get("response_obligations", []))}
+
 QUESTIONS:
 {json_dumps(analysis.get("questions", []))}
 
-CURRENT STATE:
-{json_dumps(sanitize_state_for_llm(lead))}
+OBJECTION:
+{json_dumps(analysis.get("objection", {}))}
 
-ACTIVE CHILD:
-{json_dumps(child)}
+AMBIGUITY:
+{json_dumps(analysis.get("ambiguity", {}))}
 
 NEED ANALYSIS:
 {json_dumps(analysis.get("need_analysis", {}))}
 
-PRELIMINARY RECOMMENDATION:
-{recommendation}
+STATE:
+{json_dumps(sanitize_state_for_llm(lead))}
 
 RECENT CONVERSATION:
 {recent_history_text(lead)}
 
-APPROVED BUSINESS FACTS:
+APPROVED HARD FACTS:
 {json_dumps(BUSINESS_FACTS)}
 
-RELEVANT KNOWLEDGE BASE:
+KB CANDIDATES:
 {json_dumps(kb_context)}
 
-NEXT STEP MAY BE INCLUDED:
-{include_next_step}
+PRELIMINARY RECOMMENDATION:
+{recommendation}
 
-Əvvəl primary intent-i cavablandır.
-Əgər valideyn situasiya təsvir edibsə,
-məlumatları bir-biri ilə əlaqələndir.
+Primary intent-i cavablandır.
+Bütün response obligations nəzərə alınmalıdır.
 
-Məsələn:
-evdə rahat danışır,
-amma məktəbdə müəllim qarşısında
-bildiyi cavabı deməyə çəkinir.
+Əgər hard fact source-da yoxdursa uydurma.
 
-Burada:
-"bu mütləq özgüvənsizlikdir"
-demək olmaz.
+Əgər ambiguity varsa qərar vermə;
+1 clarification ver.
 
-Belə cavab daha düzgündür:
-"Bu, ümumi xarakter xüsusiyyətindən çox
-konkret məktəb mühitində özünüifadə və
-özünəinamla əlaqəli ola bilər.
-Amma tək bu məlumatla qəti nəticə demək olmaz."
+Əgər objection varsa objection-in özünə cavab ver.
 
-State-də olan məlumatı təkrar soruşma.
-Yalnız real faydası varsa maksimum bir sual ver.
+Əgər istifadəçi situasiya paylaşırsa
+əlaqəli və ehtiyatlı reasoning ver.
 """
 
     try:
 
-        response = client.chat.completions.create(
+        result = (
+            client
+            .chat.completions
+            .create(
 
-            model=MODEL_NAME,
+                model=MODEL_NAME,
 
-            temperature=0.25,
+                temperature=0.20,
 
-            messages=[
-                {
-                    "role": "system",
-                    "content": RESPONSE_SYSTEM_PROMPT
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ]
+                messages=[
+                    {
+                        "role":
+                            "system",
+
+                        "content":
+                            RESPONSE_SYSTEM_PROMPT
+                    },
+                    {
+                        "role":
+                            "user",
+
+                        "content":
+                            prompt
+                    }
+                ]
+            )
         )
 
         return (
-            response
+            result
             .choices[0]
             .message
             .content
@@ -3062,34 +3885,340 @@ Yalnız real faydası varsa maksimum bir sual ver.
 
 
 # ============================================================
-# 24. NEXT BEST ACTION
+# 30. OBJECTION HANDLERS
 # ============================================================
 
-def get_next_best_action(
-    lead,
-    analysis=None
+def handle_child_resistance(
+    lead
 ):
+
+    child = get_active_child(
+        lead
+    )
+
+    child[
+        "willingness"
+    ] = "unwilling"
+
+    lead[
+        "objection_type"
+    ] = "child_resistance"
+
+    return (
+        "Məcbur etmək tövsiyə olunmur. "
+        "Əvvəlcə niyə istəmədiyini anlamaq daha faydalıdır. "
+        "Özü razı olsa, proqramı birbaşa eşitməsi üçün "
+        "qısa görüntülü tanışlıq təşkil etmək olar."
+    )
+
+
+def handle_spouse_skepticism(
+    lead,
+    analysis
+):
+
+    lead[
+        "objection_type"
+    ] = "spouse_skepticism"
+
+    objection = (
+        analysis.get(
+            "objection",
+            {}
+        )
+        or {}
+    )
+
+    question = objection.get(
+        "best_clarification_question"
+    )
+
+    base = (
+        "Bu tərəddüd başadüşüləndir. Məqsəd sadəcə "
+        "“zamanla öyrənər” deyil, həmin bacarıqları "
+        "təhlükəsiz mühitdə praktik şəkildə məşq etdirməkdir."
+    )
+
+    if question:
+
+        return (
+            base
+            + " "
+            + question
+        )
+
+    return base
+
+
+def handle_decision_dependency(
+    lead,
+    analysis
+):
+
+    lead[
+        "objection_type"
+    ] = "decision_dependency"
+
+    # If a real agreed follow-up date already exists,
+    # respect it.
+    if lead.get(
+        "agreed_followup_at"
+    ):
+
+        return (
+            f"Əlbəttə. {lead['agreed_followup_at']} üçün qeyd edirəm. "
+            "O vaxta qədər əlavə follow-up etməyəcəyik."
+        )
+
+    objection = (
+        analysis.get(
+            "objection",
+            {}
+        )
+        or {}
+    )
+
+    clarification = (
+        objection.get(
+            "best_clarification_question"
+        )
+    )
+
+    if clarification:
+
+        return (
+            "Əlbəttə. "
+            + clarification
+        )
+
+    return (
+        "Əlbəttə. Sadəcə dəqiqləşdirim: "
+        "yoldaşınızla daha çox proqramın uyğunluğunu "
+        "müzakirə etmək istəyirsiniz, yoxsa qiymət və ödəniş tərəfini?"
+    )
+
+
+def handle_ambiguity(
+    lead,
+    analysis
+):
+
+    lead[
+        "ambiguity_present"
+    ] = True
+
+    lead[
+        "clarification_needed"
+    ] = True
+
+    ambiguity = (
+        analysis.get(
+            "ambiguity",
+            {}
+        )
+        or {}
+    )
+
+    question = ambiguity.get(
+        "best_clarification_question"
+    )
+
+    if question:
+
+        return question
+
+    return (
+        "Dəqiqləşdirim: çətinlik daha çox vaxt/logistika "
+        "baxımındandır, yoxsa iştirakla bağlı başqa tərəddüdünüz var?"
+    )
+
+
+# ============================================================
+# 31. READY LEAD
+#
+# IMPORTANT:
+# Ready lead is different from normal lead.
+#
+# Discovery stops.
+# Child intro is mandatory before final acceptance.
+# ============================================================
+
+def handle_ready_to_proceed(
+    lead
+):
+
+    lead[
+        "ready_to_proceed"
+    ] = True
+
+    lead[
+        "sales_stage"
+    ] = "READY_TO_PROCEED"
+
+    lead[
+        "child_intro_required"
+    ] = True
+
+    if (
+        lead.get(
+            "child_intro_status"
+        )
+        == "NOT_STARTED"
+    ):
+
+        lead[
+            "child_intro_status"
+        ] = "PENDING"
+
+    lead[
+        "next_action"
+    ] = "BOOK_CHILD_INTRO"
+
+    if lead.get(
+        "child_intro_time"
+    ):
+
+        lead[
+            "child_intro_status"
+        ] = "BOOKED"
+
+        lead[
+            "sales_stage"
+        ] = "CHILD_INTRO_BOOKED"
+
+        lead[
+            "status"
+        ] = "CALL_REQUESTED"
+
+        return (
+            "Əla. Növbəti mərhələ övladınızla "
+            "təxminən 5 dəqiqəlik görüntülü tanışlıqdır. "
+            f"{lead['child_intro_time']} üçün qeyd etdim ✅"
+        )
+
+    return (
+        "Əla. Discovery-ni burada dayandıraq. "
+        "Növbəti mərhələ övladınızla qısa görüntülü tanışlıqdır. "
+        "Sizə hansı gün və saat uyğundur?"
+    )
+
+
+# ============================================================
+# 32. NORMAL SALES NEXT STEP POLICY
+#
+# THIS IS THE MAIN V10.2 CHANGE
+# ============================================================
+
+def decide_next_step(
+    lead,
+    analysis
+):
+
+    # --------------------------------------------------------
+    # 1. HUMAN OWNS LEAD
+    # --------------------------------------------------------
 
     if human_owns_lead(
         lead
     ):
+
         return None
+
+    # --------------------------------------------------------
+    # 2. SAFETY / HANDOFF
+    # --------------------------------------------------------
+
+    if lead.get(
+        "status"
+    ) == "ESCALATED":
+
+        return None
+
+    # --------------------------------------------------------
+    # 3. USER HAS A REAL AGREED FOLLOW-UP
+    # --------------------------------------------------------
 
     if lead.get(
         "agreed_followup_at"
     ):
+
         return None
+
+    # --------------------------------------------------------
+    # 4. AMBIGUITY MUST BE RESOLVED FIRST
+    # --------------------------------------------------------
+
+    ambiguity = (
+        analysis.get(
+            "ambiguity",
+            {}
+        )
+        or {}
+    )
+
+    if (
+        ambiguity.get(
+            "present"
+        )
+        and
+        ambiguity.get(
+            "clarification_needed"
+        )
+    ):
+
+        return "CLARIFY_AMBIGUITY"
+
+    # --------------------------------------------------------
+    # 5. OBJECTION MUST BE RESOLVED FIRST
+    # --------------------------------------------------------
+
+    objection = (
+        analysis.get(
+            "objection",
+            {}
+        )
+        or {}
+    )
+
+    if objection.get(
+        "present"
+    ):
+
+        objection_type = (
+            objection.get(
+                "type"
+            )
+        )
+
+        if objection_type in {
+            "spouse_skepticism",
+            "decision_dependency",
+            "price",
+            "schedule",
+            "logistics",
+            "trust",
+            "value"
+        }:
+
+            return None
+
+    # --------------------------------------------------------
+    # 6. EXPLICIT READY LEAD
+    # --------------------------------------------------------
 
     if lead.get(
         "ready_to_proceed"
     ):
 
-        if lead.get(
-            "child_intro_status"
-        ) in {
-            "NOT_STARTED",
-            "PENDING"
-        }:
+        if (
+            lead.get(
+                "child_intro_status"
+            )
+            in {
+                "NOT_STARTED",
+                "PENDING"
+            }
+        ):
 
             return "BOOK_CHILD_INTRO"
 
@@ -3098,6 +4227,10 @@ def get_next_best_action(
     child = get_active_child(
         lead
     )
+
+    # --------------------------------------------------------
+    # 7. AGE
+    # --------------------------------------------------------
 
     if child.get(
         "age"
@@ -3109,20 +4242,20 @@ def get_next_best_action(
         child
     )
 
-    if age_rule[
-        "status"
-    ] in {
+    if age_rule in {
         "SPECIALIST_REVIEW",
-        "NOT_FIT_GROUP"
+        "NOT_STANDARD_GROUP"
     }:
 
         return "SPECIALIST_REVIEW"
 
-    if age_rule[
-        "status"
-    ] == "INDIVIDUAL":
+    if age_rule == "INDIVIDUAL":
 
-        return "INDIVIDUAL_OFFER"
+        return "INDIVIDUAL_PATH"
+
+    # --------------------------------------------------------
+    # 8. NEED
+    # --------------------------------------------------------
 
     if not child.get(
         "need"
@@ -3130,37 +4263,47 @@ def get_next_best_action(
 
         return "ASK_NEED"
 
-    if analysis:
+    # --------------------------------------------------------
+    # 9. ONE USEFUL CONSULTATIVE QUESTION
+    # --------------------------------------------------------
 
-        need_analysis = (
-            analysis.get(
-                "need_analysis",
-                {}
-            )
-            or {}
+    need_analysis = (
+        analysis.get(
+            "need_analysis",
+            {}
         )
-
-        if (
-            not child.get(
-                "discovery_complete"
-            )
-            and
-            need_analysis.get(
-                "clarification_needed"
-            )
-            and
-            child.get(
-                "discovery_question_count",
-                0
-            ) < 3
-        ):
-
-            return "CLARIFY_NEED"
+        or {}
+    )
 
     if (
-        not lead.get("phone")
+        not child.get(
+            "discovery_complete"
+        )
         and
-        not lead.get("parent_name")
+        need_analysis.get(
+            "clarification_needed"
+        )
+        and
+        child.get(
+            "discovery_question_count",
+            0
+        ) < 3
+    ):
+
+        return "CLARIFY_NEED"
+
+    # --------------------------------------------------------
+    # 10. CONTACT
+    # --------------------------------------------------------
+
+    if (
+        not lead.get(
+            "parent_name"
+        )
+        and
+        not lead.get(
+            "phone"
+        )
     ):
 
         return "ASK_NAME_PHONE"
@@ -3171,25 +4314,84 @@ def get_next_best_action(
 
         return "ASK_PHONE"
 
-    if not lead.get(
-        "preferred_call_time"
+    # --------------------------------------------------------
+    # 11. NORMAL LEAD -> PARENT CALL
+    #
+    # THIS USED TO INCORRECTLY BOOK CHILD VIDEO.
+    # --------------------------------------------------------
+
+    if (
+        lead.get(
+            "parent_call_status"
+        )
+        == "NOT_STARTED"
     ):
 
-        return "ASK_CHILD_INTRO_TIME"
+        return "ASK_PARENT_CALL_TIME"
 
-    return "BOOK_CHILD_INTRO"
+    if (
+        lead.get(
+            "parent_call_status"
+        )
+        == "PENDING"
+    ):
+
+        return "ASK_PARENT_CALL_TIME"
+
+    # --------------------------------------------------------
+    # 12. PARENT CALL BOOKED
+    # --------------------------------------------------------
+
+    if (
+        lead.get(
+            "parent_call_status"
+        )
+        == "BOOKED"
+    ):
+
+        return None
+
+    # --------------------------------------------------------
+    # 13. AFTER PARENT CALL
+    #
+    # Child intro is NOT automatic.
+    # It must be required/requested/ready.
+    # --------------------------------------------------------
+
+    if (
+        lead.get(
+            "parent_call_status"
+        )
+        == "COMPLETED"
+    ):
+
+        if (
+            lead.get(
+                "child_intro_required"
+            )
+            or
+            analysis.get(
+                "child_intro_requested"
+            )
+        ):
+
+            return "BOOK_CHILD_INTRO"
+
+        return None
+
+    return None
 
 
 # ============================================================
-# 25. RENDER NEXT ACTION
+# 33. RENDER NEXT STEP
 # ============================================================
 
-def render_next_action(
+def render_next_step(
     lead,
-    analysis=None
+    analysis
 ):
 
-    action = get_next_best_action(
+    action = decide_next_step(
         lead,
         analysis
     )
@@ -3204,6 +4406,13 @@ def render_next_action(
 
     if action is None:
         return None
+
+    if action == "CLARIFY_AMBIGUITY":
+
+        return handle_ambiguity(
+            lead,
+            analysis
+        )
 
     if action == "ASK_CHILD_AGE":
 
@@ -3231,7 +4440,7 @@ def render_next_action(
 
         return (
             "Övladınızda hazırda ən çox hansı tərəfin "
-            "inkişaf etməsini istəyirsiniz?"
+            "dəyişməsini və ya inkişaf etməsini istəyirsiniz?"
         )
 
     if action == "CLARIFY_NEED":
@@ -3241,8 +4450,7 @@ def render_next_action(
                 "need_analysis",
                 {}
             )
-            if analysis
-            else {}
+            or {}
         )
 
         question = (
@@ -3286,135 +4494,68 @@ def render_next_action(
             "telefon nömrənizi yaza bilərsiniz?"
         )
 
-    if action == "ASK_CHILD_INTRO_TIME":
+    if action == "ASK_PARENT_CALL_TIME":
 
         lead[
-            "_last_question_topic"
-        ] = "child_intro_time"
+            "parent_call_status"
+        ] = "PENDING"
 
         lead[
             "sales_stage"
-        ] = "CHILD_INTRO_PENDING"
+        ] = "PARENT_CALL_PENDING"
+
+        lead[
+            "_last_question_topic"
+        ] = "parent_call_time"
+
+        return (
+            "Valideynlə 5–7 dəqiqəlik ilkin telefon danışığı üçün "
+            "sizə hansı gün və saat aralığı daha uyğundur?"
+        )
+
+    if action == "BOOK_CHILD_INTRO":
+
+        lead[
+            "child_intro_required"
+        ] = True
 
         lead[
             "child_intro_status"
         ] = "PENDING"
 
+        lead[
+            "_last_question_topic"
+        ] = "child_intro_time"
+
         return (
-            "Övladınızla qısa görüntülü tanışlıq üçün "
+            "Övladınızla təxminən 5 dəqiqəlik görüntülü tanışlıq üçün "
             "sizə hansı gün və saat aralığı uyğundur?"
-        )
-
-    if action == "BOOK_CHILD_INTRO":
-
-        if lead.get(
-            "preferred_call_time"
-        ):
-
-            lead[
-                "child_intro_status"
-            ] = "BOOKED"
-
-            lead[
-                "sales_stage"
-            ] = "CHILD_INTRO_BOOKED"
-
-            lead[
-                "status"
-            ] = "CALL_REQUESTED"
-
-            lead[
-                "next_action"
-            ] = "CHILD_INTRO"
-
-            return (
-                f"{lead['preferred_call_time']} üçün "
-                "övladınızla qısa görüntülü tanışlıq "
-                "müraciətini qeyd etdim ✅"
-            )
-
-        return (
-            "Övladınızla qısa görüntülü tanışlıq üçün "
-            "sizə uyğun gün və saat aralığını yaza bilərsiniz?"
         )
 
     if action == "SPECIALIST_REVIEW":
 
-        lead[
-            "recommended_path"
-        ] = "SPECIALIST_REVIEW"
-
         return (
-            "Bu hal üçün uyğunluğu mütəxəssisin "
-            "qısa görüntülü tanışlıqda qiymətləndirməsi "
-            "daha doğru olar."
+            "Bu yaş standart qrup aralığından kənar olduğu üçün "
+            "uyğunluğu mütəxəssislə ayrıca dəqiqləşdirmək daha doğru olar."
         )
 
-    if action == "INDIVIDUAL_OFFER":
+    if action == "INDIVIDUAL_PATH":
 
         return (
-            "Bu yaş üçün qrup proqramından çox fərdi coaching "
-            "uyğun seçimdir. Görüş 30–45 dəqiqədir və "
-            "bir görüş 80 AZN-dir."
+            "Bu yaş üçün əsas qrup proqramından çox "
+            "fərdi coaching istiqaməti nəzərdən keçirilə bilər."
         )
 
     return None
 
 
 # ============================================================
-# 26. SPECIAL RESPONSES
+# 34. SHOULD WE APPEND FLOW?
+#
+# We do NOT append flow blindly.
 # ============================================================
 
-def handle_child_resistance(
-    lead
-):
-
-    child = get_active_child(
-        lead
-    )
-
-    child[
-        "willingness"
-    ] = "unwilling"
-
-    return (
-        "Məcbur etmək tövsiyə olunmur. "
-        "Əvvəlcə niyə istəmədiyini anlamaq daha faydalıdır. "
-        "Özü razı olsa, proqramı birbaşa eşitməsi üçün "
-        "təxminən 5 dəqiqəlik görüntülü tanışlıq edə bilərik."
-    )
-
-
-def handle_followup_commitment(
-    lead
-):
-
-    when = lead.get(
-        "agreed_followup_at"
-    )
-
-    lead[
-        "next_action"
-    ] = "AGREED_FOLLOWUP"
-
-    if when:
-
-        return (
-            f"Əlbəttə. {when} üçün qeyd edirəm. "
-            "O vaxta qədər əlavə follow-up göndərməyəcəyik."
-        )
-
-    return (
-        "Əlbəttə. Sizə uyğun vaxtda qaldığımız yerdən davam edə bilərik."
-    )
-
-
-# ============================================================
-# 27. APPEND NEXT STEP
-# ============================================================
-
-def append_next_step_if_needed(
-    base_response,
+def should_append_next_step(
     lead,
     analysis
 ):
@@ -3423,7 +4564,12 @@ def append_next_step_if_needed(
         "primary_intent"
     )
 
+    # --------------------------------------------------------
+    # Don't append after these
+    # --------------------------------------------------------
+
     if primary in {
+
         "state_recall",
         "followup_commitment",
         "human_request",
@@ -3431,20 +4577,71 @@ def append_next_step_if_needed(
         "clinical_risk",
         "partnership",
         "special_payment",
-        "ready_to_proceed"
+        "spouse_skepticism",
+        "decision_dependency",
+        "ambiguous_objection",
+        "child_resistance"
+
     }:
 
-        return base_response
+        return False
+
+    ambiguity = (
+        analysis.get(
+            "ambiguity",
+            {}
+        )
+        or {}
+    )
+
+    if ambiguity.get(
+        "present"
+    ):
+
+        return False
+
+    objection = (
+        analysis.get(
+            "objection",
+            {}
+        )
+        or {}
+    )
+
+    if objection.get(
+        "present"
+    ):
+
+        return False
+
+    # --------------------------------------------------------
+    # If the user asked FAQ only and hasn't engaged as a lead,
+    # do not force qualification.
+    # --------------------------------------------------------
 
     child = get_active_child(
         lead
     )
 
     has_lead_context = any([
-        child.get("age") is not None,
-        bool(child.get("need")),
-        bool(lead.get("phone")),
-        bool(lead.get("parent_name"))
+
+        child.get(
+            "age"
+        ) is not None,
+
+        bool(
+            child.get("need")
+        ),
+
+        bool(
+            lead.get("phone")
+        ),
+
+        bool(
+            lead.get(
+                "parent_name"
+            )
+        )
     ])
 
     if (
@@ -3454,22 +4651,38 @@ def append_next_step_if_needed(
             "duration",
             "language",
             "program_info",
-            "price",
-            "eligibility"
+            "price"
         }
         and
         not has_lead_context
     ):
 
-        return base_response
+        return False
 
-    next_text = render_next_action(
+    return True
+
+
+def append_next_step_if_needed(
+    response,
+    lead,
+    analysis
+):
+
+    if not should_append_next_step(
+        lead,
+        analysis
+    ):
+
+        return response
+
+    next_text = render_next_step(
         lead,
         analysis
     )
 
     if not next_text:
-        return base_response
+
+        return response
 
     if (
         normalize_text(
@@ -3477,14 +4690,14 @@ def append_next_step_if_needed(
         )
         in
         normalize_text(
-            base_response
+            response
         )
     ):
 
-        return base_response
+        return response
 
     return (
-        base_response.rstrip()
+        response.rstrip()
         +
         "\n\n"
         +
@@ -3493,7 +4706,79 @@ def append_next_step_if_needed(
 
 
 # ============================================================
-# 28. MAIN AGENT
+# 35. ANSWER MULTI-PART MESSAGE
+# ============================================================
+
+def answer_multi_part_message(
+    user_text,
+    lead,
+    analysis
+):
+
+    hard_fact_answers = (
+        build_hard_fact_answers_from_analysis(
+            analysis,
+            lead
+        )
+    )
+
+    primary = analysis.get(
+        "primary_intent"
+    )
+
+    # If ALL obligations were approved hard facts,
+    # deterministic answers are enough.
+
+    obligations = (
+        analysis.get(
+            "response_obligations",
+            []
+        )
+        or []
+    )
+
+    question_obligations = [
+
+        item
+
+        for item in obligations
+
+        if item.get(
+            "type"
+        ) == "answer_question"
+    ]
+
+    if (
+        hard_fact_answers
+        and
+        len(hard_fact_answers)
+        >= len(question_obligations)
+        and
+        primary not in {
+            "consultation",
+            "spouse_skepticism",
+            "decision_dependency",
+            "child_resistance",
+            "ambiguous_objection"
+        }
+    ):
+
+        return "\n\n".join(
+            hard_fact_answers
+        )
+
+    # Otherwise let LLM combine contextual + factual obligations,
+    # while passing approved facts.
+
+    return generate_contextual_response(
+        user_text,
+        lead,
+        analysis
+    )
+
+
+# ============================================================
+# 36. MAIN AGENT
 # ============================================================
 
 def lead_agent_reply(
@@ -3504,8 +4789,12 @@ def lead_agent_reply(
     conversation_history=None
 ):
 
+    # --------------------------------------------------------
     # app.py backward compatibility
+    # --------------------------------------------------------
+
     if conversation_history is None:
+
         conversation_history = history
 
     user_text = compact_spaces(
@@ -3513,13 +4802,19 @@ def lead_agent_reply(
     )
 
     if not user_text:
-        return "Mesajınızı yaza bilərsiniz."
+
+        return (
+            "Mesajınızı yaza bilərsiniz."
+        )
 
     ensure_children(
         lead
     )
 
-    # If app passed history and engine has no history yet
+    # --------------------------------------------------------
+    # Import app conversation history only once
+    # --------------------------------------------------------
+
     if (
         conversation_history
         and
@@ -3530,42 +4825,48 @@ def lead_agent_reply(
 
         normalized_history = []
 
-        for item in conversation_history[-12:]:
+        for item in (
+            conversation_history[-12:]
+        ):
 
-            if isinstance(
+            if not isinstance(
                 item,
                 dict
             ):
+                continue
 
-                role = item.get(
-                    "role",
-                    ""
-                )
+            role = item.get(
+                "role"
+            )
 
-                content = item.get(
-                    "content",
-                    ""
-                )
+            content = item.get(
+                "content"
+            )
 
-                if role in {
+            if (
+                role in {
                     "user",
                     "assistant"
-                }:
+                }
+                and content
+            ):
 
-                    normalized_history.append({
-                        "role": role,
-                        "content": content
-                    })
+                normalized_history.append({
 
-        if normalized_history:
+                    "role":
+                        role,
 
-            lead[
-                "_conversation_history"
-            ] = normalized_history
+                    "content":
+                        content
+                })
 
-    # ---------------------------------------
-    # HUMAN OWNERSHIP HARD STOP
-    # ---------------------------------------
+        lead[
+            "_conversation_history"
+        ] = normalized_history
+
+    # --------------------------------------------------------
+    # HARD HUMAN OWNERSHIP STOP
+    # --------------------------------------------------------
 
     if human_owns_lead(
         lead
@@ -3573,7 +4874,7 @@ def lead_agent_reply(
 
         response = (
             "Müraciətiniz artıq əməkdaşımıza yönləndirilib. "
-            "Paralel olaraq əlavə satış mesajı göndərməyəcəyəm."
+            "Paralel olaraq əlavə qualification və satış mesajı göndərməyəcəyəm."
         )
 
         add_history(
@@ -3590,9 +4891,9 @@ def lead_agent_reply(
 
         return response
 
-    # ---------------------------------------
-    # ANALYZE
-    # ---------------------------------------
+    # --------------------------------------------------------
+    # UNDERSTAND
+    # --------------------------------------------------------
 
     analysis = analyze_user_message(
         user_text,
@@ -3620,6 +4921,28 @@ def lead_agent_reply(
                     "all_intents"
                 ),
 
+            "objection":
+                (
+                    analysis.get(
+                        "objection",
+                        {}
+                    )
+                    or {}
+                ).get(
+                    "type"
+                ),
+
+            "ambiguity":
+                (
+                    analysis.get(
+                        "ambiguity",
+                        {}
+                    )
+                    or {}
+                ).get(
+                    "present"
+                ),
+
             "confidence":
                 analysis.get(
                     "confidence"
@@ -3627,9 +4950,9 @@ def lead_agent_reply(
         }
     )
 
-    # ---------------------------------------
-    # STATE UPDATE BACKGROUND
-    # ---------------------------------------
+    # --------------------------------------------------------
+    # EXTRACT + UPDATE STATE
+    # --------------------------------------------------------
 
     apply_analysis_to_state(
         lead,
@@ -3637,8 +4960,7 @@ def lead_agent_reply(
     )
 
     calculate_recommendation(
-        lead,
-        analysis
+        lead
     )
 
     primary = analysis.get(
@@ -3646,15 +4968,16 @@ def lead_agent_reply(
         "other"
     )
 
-    # ---------------------------------------
-    # SAFETY
-    # ---------------------------------------
+    # ========================================================
+    # SAFETY / BUSINESS RULES
+    # ========================================================
 
     if (
         analysis.get(
             "clinical_or_safety_risk"
         )
-        or primary == "clinical_risk"
+        or
+        primary == "clinical_risk"
     ):
 
         mark_handoff(
@@ -3668,15 +4991,16 @@ def lead_agent_reply(
             "məsul əməkdaşa yönləndirmək daha doğru olar."
         )
 
-    # ---------------------------------------
+    # --------------------------------------------------------
     # COMPLAINT
-    # ---------------------------------------
+    # --------------------------------------------------------
 
     elif (
         analysis.get(
             "complaint"
         )
-        or primary == "complaint"
+        or
+        primary == "complaint"
     ):
 
         mark_handoff(
@@ -3689,15 +5013,16 @@ def lead_agent_reply(
             "müraciətinizi məsul əməkdaşa yönləndirirəm."
         )
 
-    # ---------------------------------------
+    # --------------------------------------------------------
     # HUMAN REQUEST
-    # ---------------------------------------
+    # --------------------------------------------------------
 
     elif (
         analysis.get(
             "human_requested"
         )
-        or primary == "human_request"
+        or
+        primary == "human_request"
     ):
 
         mark_handoff(
@@ -3709,27 +5034,27 @@ def lead_agent_reply(
         ):
 
             response = (
-                "Əlbəttə. Müraciətinizi əməkdaşımıza "
-                "yönləndirirəm. Əlaqə nömrəniz artıq qeyd olunub."
+                "Əlbəttə. Müraciətinizi əməkdaşımıza yönləndirirəm. "
+                "Əlaqə nömrəniz artıq qeyd olunub."
             )
 
         else:
 
             response = (
-                "Əlbəttə. Müraciətinizi əməkdaşımıza "
-                "yönləndirə bilərəm. "
+                "Əlbəttə. Müraciətinizi əməkdaşımıza yönləndirə bilərəm. "
                 "Əlaqə nömrənizi yaza bilərsiniz?"
             )
 
-    # ---------------------------------------
+    # --------------------------------------------------------
     # PARTNERSHIP
-    # ---------------------------------------
+    # --------------------------------------------------------
 
     elif (
         analysis.get(
             "partnership"
         )
-        or primary == "partnership"
+        or
+        primary == "partnership"
     ):
 
         mark_handoff(
@@ -3737,36 +5062,31 @@ def lead_agent_reply(
         )
 
         response = (
-            "Əməkdaşlıq təkliflərini aidiyyəti komanda "
-            "dəyərləndirir. Müraciətinizi həmin komandaya "
-            "yönləndirə bilərik."
+            "Əməkdaşlıq təkliflərini aidiyyəti komanda dəyərləndirir. "
+            "Müraciətinizi həmin komandaya yönləndirmək daha doğru olar."
         )
 
-    # ---------------------------------------
+    # --------------------------------------------------------
     # SPECIAL PAYMENT
-    # ---------------------------------------
+    # --------------------------------------------------------
 
     elif (
         analysis.get(
             "special_payment_request"
         )
-        or primary == "special_payment"
+        or
+        primary == "special_payment"
     ):
 
         response = (
-            "Standart qaydada ödəniş modul başlamazdan əvvəl "
-            "modul üzrə edilir. Başlamağa əsas maneə "
-            "ödəniş formasıdırsa, bunu rəhbərliklə ayrıca "
-            "dəqiqləşdirmək olar."
+            "Standart qaydada ödəniş modul üzrə edilir. "
+            "Əgər başlamağa əsas maneə ödəniş formasıdırsa, "
+            "bunu rəhbərliklə ayrıca dəqiqləşdirmək olar."
         )
 
-        lead[
-            "next_action"
-        ] = "PAYMENT_HANDOFF_IF_HIGH_INTENT"
-
-    # ---------------------------------------
+    # ========================================================
     # STATE RECALL
-    # ---------------------------------------
+    # ========================================================
 
     elif (
         primary == "state_recall"
@@ -3782,7 +5102,7 @@ def lead_agent_reply(
         )
     ):
 
-        recall_info = (
+        recall = (
             analysis.get(
                 "state_recall",
                 {}
@@ -3792,15 +5112,134 @@ def lead_agent_reply(
 
         response = answer_state_recall(
             lead,
-            recall_info.get(
+            recall.get(
                 "fields",
                 []
             )
         )
 
-    # ---------------------------------------
+    # ========================================================
+    # AMBIGUITY
+    # ========================================================
+
+    elif (
+        primary == "ambiguous_objection"
+        or
+        (
+            analysis.get(
+                "ambiguity",
+                {}
+            )
+            or {}
+        ).get(
+            "present"
+        )
+    ):
+
+        response = handle_ambiguity(
+            lead,
+            analysis
+        )
+
+    # ========================================================
+    # CHILD RESISTANCE
+    # ========================================================
+
+    elif (
+        primary == "child_resistance"
+        or
+        (
+            analysis.get(
+                "objection",
+                {}
+            )
+            or {}
+        ).get(
+            "type"
+        )
+        == "child_resistance"
+    ):
+
+        response = handle_child_resistance(
+            lead
+        )
+
+    # ========================================================
+    # SPOUSE SKEPTICISM
+    # ========================================================
+
+    elif (
+        primary == "spouse_skepticism"
+        or
+        (
+            analysis.get(
+                "objection",
+                {}
+            )
+            or {}
+        ).get(
+            "type"
+        )
+        == "spouse_skepticism"
+    ):
+
+        response = (
+            handle_spouse_skepticism(
+                lead,
+                analysis
+            )
+        )
+
+    # ========================================================
+    # DECISION DEPENDENCY
+    # ========================================================
+
+    elif (
+        primary == "decision_dependency"
+        or
+        (
+            analysis.get(
+                "objection",
+                {}
+            )
+            or {}
+        ).get(
+            "type"
+        )
+        == "decision_dependency"
+    ):
+
+        response = (
+            handle_decision_dependency(
+                lead,
+                analysis
+            )
+        )
+
+    # ========================================================
+    # EXPLICIT AGREED FOLLOWUP
+    # ========================================================
+
+    elif (
+        primary == "followup_commitment"
+        and
+        lead.get(
+            "agreed_followup_at"
+        )
+    ):
+
+        lead[
+            "next_action"
+        ] = "AGREED_FOLLOWUP"
+
+        response = (
+            f"Əlbəttə. {lead['agreed_followup_at']} üçün qeyd edirəm. "
+            "O vaxta qədər əlavə follow-up etməyəcəyik."
+        )
+
+    # ========================================================
     # READY TO PROCEED
-    # ---------------------------------------
+    # ========================================================
 
     elif (
         analysis.get(
@@ -3819,149 +5258,9 @@ def lead_agent_reply(
             )
         )
 
-    # ---------------------------------------
-    # FOLLOW-UP
-    # ---------------------------------------
-
-    elif primary == "followup_commitment":
-
-        response = (
-            handle_followup_commitment(
-                lead
-            )
-        )
-
-    # ---------------------------------------
-    # CHILD RESISTANCE
-    # ---------------------------------------
-
-    elif primary == "child_resistance":
-
-        response = (
-            handle_child_resistance(
-                lead
-            )
-        )
-
-        response = append_next_step_if_needed(
-            response,
-            lead,
-            analysis
-        )
-
-    # ---------------------------------------
-    # LOCATION
-    # ---------------------------------------
-
-    elif primary == "location":
-
-        if len(
-            analysis.get(
-                "questions",
-                []
-            )
-        ) > 1:
-
-            response = (
-                generate_contextual_response(
-                    user_text,
-                    lead,
-                    analysis
-                )
-            )
-
-        else:
-
-            response = (
-                answer_location()
-            )
-
-        response = (
-            append_next_step_if_needed(
-                response,
-                lead,
-                analysis
-            )
-        )
-
-    # ---------------------------------------
-    # SCHEDULE
-    # ---------------------------------------
-
-    elif primary == "schedule":
-
-        if len(
-            analysis.get(
-                "questions",
-                []
-            )
-        ) > 1:
-
-            response = (
-                generate_contextual_response(
-                    user_text,
-                    lead,
-                    analysis
-                )
-            )
-
-        else:
-
-            response = (
-                answer_schedule()
-            )
-
-        response = (
-            append_next_step_if_needed(
-                response,
-                lead,
-                analysis
-            )
-        )
-
-    # ---------------------------------------
-    # DURATION
-    # ---------------------------------------
-
-    elif primary == "duration":
-
-        response = (
-            generate_contextual_response(
-                user_text,
-                lead,
-                analysis
-            )
-        )
-
-        response = (
-            append_next_step_if_needed(
-                response,
-                lead,
-                analysis
-            )
-        )
-
-    # ---------------------------------------
-    # LANGUAGE
-    # ---------------------------------------
-
-    elif primary == "language":
-
-        response = (
-            answer_language()
-        )
-
-        response = (
-            append_next_step_if_needed(
-                response,
-                lead,
-                analysis
-            )
-        )
-
-    # ---------------------------------------
+    # ========================================================
     # ELIGIBILITY
-    # ---------------------------------------
+    # ========================================================
 
     elif primary == "eligibility":
 
@@ -3979,21 +5278,31 @@ def lead_agent_reply(
             )
         )
 
-    # ---------------------------------------
-    # PRICE
-    # ---------------------------------------
+    # ========================================================
+    # SIMPLE HARD FACT
+    # ========================================================
 
-    elif primary == "price":
+    elif primary in {
+        "location",
+        "schedule",
+        "price",
+        "language",
+        "duration"
+    }:
 
-        if len(
-            analysis.get(
-                "questions",
-                []
+        # More than one question?
+        if (
+            len(
+                analysis.get(
+                    "questions",
+                    []
+                )
             )
-        ) > 1:
+            > 1
+        ):
 
             response = (
-                generate_contextual_response(
+                answer_multi_part_message(
                     user_text,
                     lead,
                     analysis
@@ -4002,11 +5311,46 @@ def lead_agent_reply(
 
         else:
 
-            response = (
-                answer_price(
-                    lead
+            topic = primary
+
+            if primary == "duration":
+
+                # Need exact duration subtype.
+                questions = (
+                    analysis.get(
+                        "questions",
+                        []
+                    )
+                    or []
                 )
+
+                if questions:
+
+                    topic = questions[0].get(
+                        "topic",
+                        "group_session_duration"
+                    )
+
+                else:
+
+                    topic = (
+                        "group_session_duration"
+                    )
+
+            response = hard_fact_answer(
+                topic,
+                lead
             )
+
+            if not response:
+
+                response = (
+                    generate_contextual_response(
+                        user_text,
+                        lead,
+                        analysis
+                    )
+                )
 
         response = (
             append_next_step_if_needed(
@@ -4016,23 +5360,15 @@ def lead_agent_reply(
             )
         )
 
-    # ---------------------------------------
+    # ========================================================
     # GREETING
-    # ---------------------------------------
+    # ========================================================
 
     elif primary == "greeting":
 
-        has_history = (
-            len(
-                lead.get(
-                    "_conversation_history",
-                    []
-                )
-            )
-            > 0
-        )
-
-        if has_history:
+        if lead.get(
+            "_conversation_history"
+        ):
 
             response = "Salam 😊"
 
@@ -4042,9 +5378,39 @@ def lead_agent_reply(
                 "Salam 😊 Sizə necə kömək edə bilərəm?"
             )
 
-    # ---------------------------------------
-    # CONSULTATION / QUESTIONS / PROGRAM INFO
-    # ---------------------------------------
+    # ========================================================
+    # MULTI-PART QUESTIONS
+    # ========================================================
+
+    elif (
+        len(
+            analysis.get(
+                "response_obligations",
+                []
+            )
+        )
+        > 1
+    ):
+
+        response = (
+            answer_multi_part_message(
+                user_text,
+                lead,
+                analysis
+            )
+        )
+
+        response = (
+            append_next_step_if_needed(
+                response,
+                lead,
+                analysis
+            )
+        )
+
+    # ========================================================
+    # CONSULTATION / PROGRAM INFO / OTHER QUESTION
+    # ========================================================
 
     elif (
         primary in {
@@ -4055,10 +5421,6 @@ def lead_agent_reply(
         or
         analysis.get(
             "is_question"
-        )
-        or
-        analysis.get(
-            "questions"
         )
     ):
 
@@ -4078,13 +5440,13 @@ def lead_agent_reply(
             )
         )
 
-    # ---------------------------------------
-    # FIELD INFORMATION
-    # ---------------------------------------
+    # ========================================================
+    # USER PROVIDED INFORMATION
+    # ========================================================
 
     else:
 
-        next_text = render_next_action(
+        next_text = render_next_step(
             lead,
             analysis
         )
@@ -4099,31 +5461,75 @@ def lead_agent_reply(
                 generate_contextual_response(
                     user_text,
                     lead,
-                    analysis,
-                    include_next_step=False
+                    analysis
                 )
             )
 
-    # ---------------------------------------
-    # AUTO BOOKING CHECK
-    # ---------------------------------------
+    # ========================================================
+    # BOOK NORMAL PARENT CALL
+    #
+    # If parent has given a time while parent-call is pending.
+    # ========================================================
+
+    if (
+        not lead.get(
+            "ready_to_proceed"
+        )
+        and
+        lead.get(
+            "parent_call_time"
+        )
+        and
+        lead.get(
+            "phone"
+        )
+        and
+        lead.get(
+            "parent_call_status"
+        )
+        in {
+            "NOT_STARTED",
+            "PENDING"
+        }
+    ):
+
+        lead[
+            "parent_call_status"
+        ] = "BOOKED"
+
+        lead[
+            "sales_stage"
+        ] = "PARENT_CALL_BOOKED"
+
+        lead[
+            "next_action"
+        ] = "PARENT_CALL"
+
+        # Compatibility with current Streamlit completion logic
+        lead[
+            "status"
+        ] = "CALL_REQUESTED"
+
+    # ========================================================
+    # BOOK READY LEAD CHILD INTRO
+    # ========================================================
 
     if (
         lead.get(
-            "preferred_call_time"
+            "ready_to_proceed"
+        )
+        and
+        lead.get(
+            "child_intro_time"
         )
         and
         lead.get(
             "child_intro_status"
         )
         in {
-            "PENDING",
-            "NOT_STARTED"
+            "NOT_STARTED",
+            "PENDING"
         }
-        and
-        lead.get(
-            "phone"
-        )
     ):
 
         lead[
@@ -4142,9 +5548,9 @@ def lead_agent_reply(
             "status"
         ] = "CALL_REQUESTED"
 
-    # ---------------------------------------
-    # HISTORY
-    # ---------------------------------------
+    # ========================================================
+    # MEMORY
+    # ========================================================
 
     add_history(
         lead,
@@ -4166,13 +5572,12 @@ def lead_agent_reply(
         lead
     )
 
-    # IMPORTANT:
-    # app.py compatibility
+    # Current app.py expects only string
     return response
 
 
 # ============================================================
-# 29. OLD FLOW COMPATIBILITY
+# 37. OLD APP / CLI COMPATIBILITY
 # ============================================================
 
 def get_next_missing_field(
@@ -4213,8 +5618,14 @@ def get_next_missing_field(
 
         return "phone"
 
-    if not lead.get(
-        "preferred_call_time"
+    if (
+        lead.get(
+            "parent_call_status"
+        )
+        in {
+            "NOT_STARTED",
+            "PENDING"
+        }
     ):
 
         return "preferred_call_time"
@@ -4236,7 +5647,7 @@ FIELD_QUESTIONS = {
     "main_concern":
         (
             "Övladınızda hazırda ən çox hansı tərəfin "
-            "inkişaf etməsini istəyirsiniz?"
+            "dəyişməsini və ya inkişaf etməsini istəyirsiniz?"
         ),
 
     "phone":
@@ -4247,7 +5658,7 @@ FIELD_QUESTIONS = {
 
     "preferred_call_time":
         (
-            "Övladınızla qısa görüntülü tanışlıq üçün "
+            "Valideynlə 5–7 dəqiqəlik ilkin telefon danışığı üçün "
             "sizə hansı gün və saat aralığı uyğundur?"
         )
 }
@@ -4260,14 +5671,14 @@ def answer_faq_question(
 
     hit = get_best_faq_hit(
         question,
-        min_score=min_score
+        min_score
     )
 
     if not hit:
 
         return (
-            "Bu sualla bağlı təsdiqlənmiş məlumat "
-            "bazasından dəqiq cavab tapa bilmədim."
+            "Bu sualla bağlı təsdiqlənmiş məlumat bazasında "
+            "dəqiq cavab tapa bilmədim."
         )
 
     return hit[
@@ -4276,8 +5687,9 @@ def answer_faq_question(
 
 
 # ============================================================
-# 30. SAVE CONVERSATION LOG
-# BACKWARD COMPATIBLE WITH OLD APP.PY
+# 38. CONVERSATION LOG
+#
+# Backward compatible with old app.py
 # ============================================================
 
 def save_conversation_log(
@@ -4290,10 +5702,8 @@ def save_conversation_log(
     faq_score=None
 ):
 
-    # compatibility:
-    # save_conversation_log(
-    # session_id, user, answer, lead
-    # )
+    # Old:
+    # save_conversation_log(session, user, bot, lead)
 
     if (
         isinstance(
@@ -4328,8 +5738,10 @@ def save_conversation_log(
 
     if faq_score is None:
 
-        faq_score = lead.get(
-            "_last_faq_score"
+        faq_score = (
+            lead.get(
+                "_last_faq_score"
+            )
         )
 
     conn = get_connection()
@@ -4369,11 +5781,13 @@ def save_conversation_log(
         )
 
         VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?
         )
         """,
 
         (
+
             session_id,
 
             user_message,
@@ -4388,7 +5802,6 @@ def save_conversation_log(
             ),
 
             faq_score,
-
             current_field,
 
             lead.get(
@@ -4446,7 +5859,7 @@ def save_conversation_log(
 
 
 # ============================================================
-# 31. ADMIN DATA
+# 39. ADMIN HELPERS
 # ============================================================
 
 def get_all_leads():
