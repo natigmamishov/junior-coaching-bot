@@ -158,6 +158,12 @@ def persist_lead_once(
     """
 
     if st.session_state.lead_saved:
+        # The chat stays open after completion, so later corrections must also
+        # be reflected in persistent storage.
+        try:
+            bot.update_lead_in_db(lead)
+        except Exception as exc:
+            print("LEAD UPDATE ERROR:", exc)
         return None
 
     status = lead.get(
@@ -179,6 +185,8 @@ def persist_lead_once(
     if existing_lead is not None:
 
         st.session_state.lead_saved = True
+        lead["_db_id"] = existing_lead["id"]
+        bot.update_lead_in_db(lead)
 
         if status == "CALL_REQUESTED":
 
@@ -630,7 +638,7 @@ for message in st.session_state.messages:
 # CHAT INPUT
 # =========================================================
 
-if not st.session_state.conversation_finished:
+if True:  # A completed application does not close the conversation.
 
     user_text = st.chat_input(
         "Mesajınızı yazın..."
@@ -797,7 +805,8 @@ if not st.session_state.conversation_finished:
                         )
 
 
-                st.session_state.conversation_finished = True
+                # Keep chat active for corrections, further questions and handoff.
+                st.session_state.conversation_finished = False
 
 
 # =========================================================

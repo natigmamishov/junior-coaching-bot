@@ -819,6 +819,59 @@ def test_live_scenarios():
 # MAIN
 # =========================================================
 
+def test_core_engine_contract():
+    print("\nCore engine contract")
+
+    lead = bot.create_empty_lead("TEST")
+    for key in (
+        "lead_stage", "application_status", "objections", "questions",
+        "previous_actions", "pending_actions", "handoff_status", "owner",
+    ):
+        check(f"state contains {key}", key in lead, repr(lead))
+
+    analysis = bot.verify_analysis({
+        "intent": "field_answer",
+        "confidence": 0.2,
+        "parent_name": "Bu Nomreyle",
+        "children": [],
+        "preferred_call_time": "",
+    })
+    check(
+        "low-confidence entity requests clarification",
+        analysis["clarification_needed"] and not analysis["parent_name"],
+        repr(analysis),
+    )
+
+    lead.update({
+        "parent_name": "Aynur", "phone": "0501234567",
+        "preferred_call_time": "sabah 15:00",
+    })
+    lead["children"] = [{
+        "name": "Murad", "age": 15, "main_concern": "məktəbdə danışmır",
+        "needs_concern_followup": False, "concern_duration": None,
+        "concern_onset": None,
+    }]
+    bot.update_conversation_state(lead, {
+        "questions": ["Görüşlər haradadır?", "Hansı günlərdir?"],
+        "objections": ["Qiymət tərəddüdü"],
+        "handoff_required": False,
+    })
+    check("multi-intent questions persist", len(lead["questions"]) == 2, repr(lead))
+    check("objection persists", lead["objections"] == ["Qiymət tərəddüdü"], repr(lead))
+    check(
+        "completed lead exposes callback action",
+        lead["application_status"] == "completed"
+        and "create_callback" in lead["pending_actions"],
+        repr(lead),
+    )
+
+    bot.update_conversation_state(lead, {"handoff_required": True})
+    check(
+        "handoff changes ownership",
+        lead["owner"] == "human" and "human_handoff" in lead["pending_actions"],
+        repr(lead),
+    )
+
 def main():
 
     print(
@@ -835,6 +888,7 @@ def main():
     test_refusal()
     test_concern_answer()
     test_no_contact_finalization()
+    test_core_engine_contract()
 
     if "--live" in sys.argv:
 
