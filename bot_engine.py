@@ -1663,6 +1663,11 @@ L) MULTI-INTENT, UNCERTAINTY AND HANDOFF
 - Set handoff_required=true for explicit human requests, safety issues, facts absent
   from the approved knowledge base, or decisions that require a person.
 - `reasoning_summary` must be short and must not invent facts.
+- Resolve pronouns and elliptical references ("onu", "zəngi", "sabah edək",
+  "onu nəzərdə tuturdum") against the immediately preceding turns. Moving a
+  callback is not a pause_request and not a question about call duration.
+- Behaviour descriptions are observations, not diagnoses. Never assert an
+  unstated cause such as shyness; use cautious language such as "əlaqəli ola bilər".
 """
 
     user_prompt = f"""
@@ -3102,6 +3107,17 @@ def answer_special_question(
     lead: dict,
 ) -> Optional[str]:
 
+    value = normalize_for_search(user_text)
+    if (
+        any(x in value for x in ("tanisliq", "ilkin gorus", "ilkin zeng"))
+        and any(x in value for x in ("odenis", "pulsuz", "qiymet"))
+    ):
+        return (
+            "İlkin tanışlığın ödənişli və ya ödənişsiz olması barədə təsdiqlənmiş "
+            "məlumat bazamızda dəqiq fakt yoxdur. Yanlış məlumat verməmək üçün bunu "
+            "məsul əməkdaşdan dəqiqləşdirə bilərik."
+        )
+
     if is_child_presence_question(
         user_text
     ):
@@ -3238,6 +3254,34 @@ def answer_state_question(
     return "Bəli, indiyə qədər bunları qeyd etmişəm: " + "; ".join(parts) + "."
 
 
+def answer_requested_state_fields(lead: dict, fields: List[str]) -> str:
+    """Answer every explicitly requested state field in one compact response."""
+    ensure_lead_structure(lead)
+    child = get_active_child(lead)
+    values = {
+        "parent_name": ("adınız", get_parent_display_name(lead)),
+        "child_name": ("övladınızın adı", child.get("name")),
+        "child_age": ("övladınızın yaşı", child.get("age")),
+        "main_concern": ("əsas ehtiyac", child.get("main_concern")),
+        "phone": ("telefon nömrəniz", lead.get("phone")),
+        "preferred_call_time": ("zəng vaxtı", lead.get("preferred_call_time")),
+    }
+    known, missing = [], []
+    for field in fields:
+        label, value = values[field]
+        if value not in (None, ""):
+            known.append(f"{label}: {value}")
+        else:
+            missing.append(label)
+
+    parts = []
+    if known:
+        parts.append("Bəli, bunları qeyd etmişəm: " + "; ".join(known) + ".")
+    if missing:
+        parts.append("Hələ " + ", ".join(missing) + " qeyd edilməyib.")
+    return " ".join(parts)
+
+
 def generate_contextual_kb_answer(
     question: str,
     lead: dict,
@@ -3326,6 +3370,14 @@ CARİ STATE:
 
 KNOWLEDGE BASE NAMİZƏDLƏRİ:
 {candidate_text}
+
+OUTPUT RULES:
+- Concrete answer first, then a short explanation, then a natural next step.
+- For yes/no questions, sentence one must say yes, no, or explicitly that the
+  approved facts do not specify it. Do not substitute a nearby FAQ answer.
+- Be warm and conversational. Do not sound like pasted FAQ text.
+- Never invent an unstated cause or diagnosis. Clearly mark cautious inference
+  with "əlaqəli ola bilər" and do not promise outcomes.
 """
 
     try:
@@ -3795,6 +3847,67 @@ def _detect_state_question_type(
 
 
 # =========================================================
+def _detect_requested_state_fields(user_text: str) -> List[str]:
+    """Detect multi-field recall without collapsing it to one primary field."""
+    value = normalize_for_search(user_text)
+    recall_signal = any(x in value for x in (
+        "bilirsiniz", "bilirsiz", "qeyd etmisiniz", "qeyd etmisiz",
+        "demisdim", "yadinizda", "goturmusunuz",
+    ))
+    if not recall_signal:
+        return []
+
+    fields = []
+    if any(x in value for x in ("telefon", "nomre", "elaqe nomre")):
+        fields.append("phone")
+    if any(x in value for x in ("yasi", "yasini", "nece yas")):
+        fields.append("child_age")
+    if any(x in value for x in ("zeng vaxt", "hansi vaxt", "hansi saat")):
+        fields.append("preferred_call_time")
+    if any(x in value for x in (
+        "oglumun adi", "qizimin adi", "usagin adi", "usagimin adi",
+        "ovladin adi", "ovladimin adi",
+    )):
+        fields.append("child_name")
+    if any(x in value for x in ("menim ad", "adimi", "adim")):
+        fields.append("parent_name")
+    return list(dict.fromkeys(fields))
+
+
+def _callback_reference_reply(
+    user_text: str,
+    history: Optional[List[Dict[str, str]]],
+    lead: dict,
+) -> Optional[str]:
+    """Resolve callback scheduling references against the previous user turn."""
+    value = normalize_for_search(user_text)
+    previous_user = ""
+    for message in reversed(history or []):
+        if message.get("role") == "user":
+            previous_user = normalize_for_search(message.get("content", ""))
+            break
+
+    explicit_call = any(x in value for x in ("zeng", "telefon danisig"))
+    correction_reference = any(x in value for x in ("nezerde tut", "onu deyirdim", "onu demek"))
+    scheduling = any(x in value for x in ("sabah", "bu gun", "edek", "kecirek", "uygundur"))
+    child_absent = any(x in value for x in ("yanimda deyil", "usaq yanimda deyil", "oglum yanimda deyil"))
+    callback_context = (explicit_call and (scheduling or correction_reference)) or (
+        correction_reference and any(x in previous_user for x in ("sabah", "edek", "yanimda deyil"))
+    ) or (child_absent and scheduling)
+    if not callback_context:
+        return None
+
+    combined = value + " " + previous_user
+    proposed = "sabah" if "sabah" in combined else "bu gün" if "bu gun" in combined else ""
+    if proposed:
+        lead["preferred_call_time"] = proposed
+        return (
+            "Əlbəttə 😊 Övladınızın ilkin zəngdə iştirakı vacib deyil, amma "
+            f"{proposed} sizə daha uyğundursa qeyd edə bilərik. Hansı saat aralığı rahatdır?"
+        )
+    return "Zəng vaxtını dəyişmək istəyirsiniz, düzdür? Hansı gün və saat aralığı rahatdır?"
+
+
 # V11 ORCHESTRATION LAYER
 # LLM reasons, policy decides next action.
 # =========================================================
@@ -3972,9 +4085,32 @@ def lead_agent_reply(
     )
     data = verify_analysis(data)
 
+    requested_state_fields = _detect_requested_state_fields(user_text)
+    callback_reference_reply = _callback_reference_reply(user_text, history, lead)
+
+    if requested_state_fields:
+        data["intent"] = "state_question"
+        data["state_question_type"] = (
+            requested_state_fields[0] if len(requested_state_fields) == 1 else "summary"
+        )
+        data["requested_state_fields"] = requested_state_fields
+        data["is_question"] = True
+        data["resume_flow"] = False
+        data["clarification_needed"] = False
+        data["ambiguity_present"] = False
+        data["handoff_required"] = False
+
+    if callback_reference_reply:
+        data["intent"] = "callback_reschedule"
+        data["preferred_call_time"] = lead.get("preferred_call_time") or ""
+        data["resume_flow"] = False
+        data["clarification_needed"] = False
+        data["ambiguity_present"] = False
+        data["handoff_required"] = False
+
     # Deterministik state sualı LLM səhvindən daha etibarlıdır.
     deterministic_state_question = _detect_state_question_type(user_text)
-    if deterministic_state_question:
+    if deterministic_state_question and not requested_state_fields:
         data["intent"] = "state_question"
         data["state_question_type"] = deterministic_state_question
         data["is_question"] = True
@@ -3999,7 +4135,10 @@ def lead_agent_reply(
     # -----------------------------------------------------
     # 3. Təhlükəsizlik / handoff / real complaint
     # -----------------------------------------------------
-    if intent == "safety_risk":
+    if callback_reference_reply:
+        reply = callback_reference_reply
+
+    elif intent == "safety_risk":
         lead["status"] = "ESCALATED"
         lead["handoff_status"] = "requested"
         lead["owner"] = "human"
@@ -4047,10 +4186,14 @@ def lead_agent_reply(
     # 6. State haqqında sual
     # -----------------------------------------------------
     elif intent == "state_question":
-        reply = answer_state_question(
-            lead,
-            data.get("state_question_type", "summary") or "summary",
-        )
+        requested = data.get("requested_state_fields") or []
+        if requested:
+            reply = answer_requested_state_fields(lead, requested)
+        else:
+            reply = answer_state_question(
+                lead,
+                data.get("state_question_type", "summary") or "summary",
+            )
         # State sualından sonra avtomatik flow-u məcbur etmirik.
 
     # -----------------------------------------------------

@@ -872,6 +872,66 @@ def test_core_engine_contract():
         repr(lead),
     )
 
+
+def test_customer_feedback_round_two():
+    print("\nCustomer feedback round 2")
+    lead = bot.create_empty_lead("TEST")
+    lead["phone"] = "0554445559"
+    lead["children"][0]["age"] = 15
+
+    text = (
+        "Mən sizə hansı telefon nömrəsini və oğlumun neçə yaşında olduğunu "
+        "demişdim? Bir də mənim adımı bilirsiniz?"
+    )
+    fields = bot._detect_requested_state_fields(text)
+    answer = bot.answer_requested_state_fields(lead, fields)
+    check(
+        "multi-field recall detects phone, age and parent name",
+        fields == ["phone", "child_age", "parent_name"],
+        repr(fields),
+    )
+    check(
+        "multi-field recall returns known and missing values together",
+        "0554445559" in answer and "15" in answer and "qeyd edilməyib" in answer,
+        answer,
+    )
+
+    payment = bot.answer_special_question("İlkin tanışlıq ödənişlidir?", lead)
+    check(
+        "unknown binary payment fact is not replaced by nearby FAQ",
+        payment is not None and "dəqiq fakt yoxdur" in payment,
+        repr(payment),
+    )
+
+    first = bot._callback_reference_reply(
+        "Bu gün oğlum yanımda deyil, olar ki sabah edək?", [], lead
+    )
+    check(
+        "child absence plus tomorrow resolves to callback scheduling",
+        first is not None and lead["preferred_call_time"] == "sabah"
+        and "Hansı saat" in first,
+        repr(first),
+    )
+
+    lead["preferred_call_time"] = None
+    followup = bot._callback_reference_reply(
+        "zəngi nəzərdə tuturdum",
+        [{"role": "user", "content": "Bu gün oğlum yanımda deyil, olar ki sabah edək?"}],
+        lead,
+    )
+    check(
+        "elliptical correction inherits tomorrow from previous turn",
+        followup is not None and lead["preferred_call_time"] == "sabah",
+        repr(followup),
+    )
+
+    duration = bot._callback_reference_reply("Zəng neçə dəqiqə davam edir?", [], lead)
+    check(
+        "call-duration question is not mistaken for rescheduling",
+        duration is None,
+        repr(duration),
+    )
+
 def main():
 
     print(
@@ -889,6 +949,7 @@ def main():
     test_concern_answer()
     test_no_contact_finalization()
     test_core_engine_contract()
+    test_customer_feedback_round_two()
 
     if "--live" in sys.argv:
 
