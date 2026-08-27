@@ -764,6 +764,9 @@ def create_empty_lead(
 
         "phone": None,
         "preferred_call_time": None,
+        "phone_declined": False,
+        "pending_questions": [],
+        "resolved_questions": [],
 
         "source": source,
         "status": "NEW",
@@ -837,6 +840,9 @@ def ensure_lead_structure(
     lead.setdefault("pending_actions", [])
     lead.setdefault("handoff_status", "none")
     lead.setdefault("owner", "ai")
+    lead.setdefault("phone_declined", False)
+    lead.setdefault("pending_questions", [])
+    lead.setdefault("resolved_questions", [])
 
 
 def get_active_child(
@@ -2337,6 +2343,20 @@ def merge_extracted_information(
         ) or [],
     )
 
+    # The model may represent a refinement as a correction so it can overwrite
+    # an inferred value. Keep the state update, but only acknowledge it as a
+    # correction when the parent explicitly corrected something.
+    normalized_user = normalize_for_search(user_text)
+    explicit_correction = (
+        normalized_user.startswith("yox ")
+        or any(x in normalized_user for x in (
+            "sehv", "duzelis", "eslinde", "duz qeyd",
+            "demek istemisdim", "nezerde tuturdum",
+        ))
+    )
+    if not explicit_correction:
+        corrected = []
+
     # ---------------------------------------------
     # 2. Parent name
     # ---------------------------------------------
@@ -2496,14 +2516,25 @@ def merge_extracted_information(
 
     if (
         phone
-        and not lead.get(
-            "phone"
+        and (
+            not lead.get("phone")
+            or lead.get("phone_declined")
         )
     ):
+
+        was_declined = bool(lead.get("phone_declined"))
 
         lead[
             "phone"
         ] = phone
+        lead["phone_declined"] = False
+        for skipped_field in ("phone", "preferred_call_time"):
+            if skipped_field in lead.get("_skipped_fields", []):
+                lead["_skipped_fields"].remove(skipped_field)
+        if was_declined and lead.get("status") == "NO_CONTACT":
+            lead["status"] = "NEW"
+            lead["application_status"] = "in_progress"
+            lead["lead_stage"] = "contact_captured"
 
     # ---------------------------------------------
     # 5. Call time
@@ -2768,7 +2799,7 @@ def get_next_missing_field(
                     lead
                 )
 
-    if is_missing(
+    if not lead.get("phone_declined") and is_missing(
         "phone",
         lead.get(
             "phone"
@@ -3119,7 +3150,8 @@ def answer_special_question(
         )
 
     generic_price_question = (
-        any(x in value for x in ("qiymet ne qeder", "qiymeti nedir", "qiymet haqqinda"))
+        "qiymet" in value
+        and any(x in value for x in ("ne qeder", "nedir", "haqqinda"))
         and not any(x in value for x in ("ferdi", "individual", "bir gorus"))
     )
     if generic_price_question:
@@ -3454,6 +3486,28 @@ OUTPUT RULES:
     )
 
 
+def _expand_compound_faq_questions(
+    user_text: str,
+    questions: List[str],
+) -> List[str]:
+    """Recover multiple FAQ topics from informal, punctuation-free questions."""
+    if len(questions) > 1:
+        return questions
+
+    value = normalize_for_search(user_text)
+    expanded = []
+    if any(x in value for x in ("ne qeder vaxt", "nece ay", "muddet", "ne qeder cekir")):
+        expanded.append("Proqram nə qədər davam edir?")
+    if any(x in value for x in ("harada", "mekan", "unvan")):
+        expanded.append("Görüşlər harada keçirilir?")
+    if any(x in value for x in ("hansi saat", "hansi gun", "cedvel", "saatdadir")):
+        expanded.append("Görüşlərin gün və saatları necə müəyyən edilir?")
+    if any(x in value for x in ("onlayn", "online", "oflayn", "offline")):
+        expanded.append("Görüşlər onlayn, yoxsa əyani keçirilir?")
+
+    return expanded if len(expanded) >= 2 else questions
+
+
 def answer_user_question(
     user_text: str,
     lead: dict,
@@ -3484,6 +3538,13 @@ def answer_user_question(
     if not questions:
         questions = [user_text]
 
+    questions = _expand_compound_faq_questions(user_text, questions)
+
+    pending = lead.setdefault("pending_questions", [])
+    for question in questions:
+        if question not in pending:
+            pending.append(question)
+
     answers = []
     seen = set()
 
@@ -3501,6 +3562,11 @@ def answer_user_question(
         )
         if answer:
             answers.append(answer)
+            if question in pending:
+                pending.remove(question)
+            resolved = lead.setdefault("resolved_questions", [])
+            if question not in resolved:
+                resolved.append(question)
 
     if not answers:
         return (
@@ -3508,7 +3574,9 @@ def answer_user_question(
             "İstəsəniz bu sualı məsul əməkdaşa yönləndirə bilərik."
         )
 
-    return "\n\n".join(answers)
+    # Compose multi-intent answers as one conversational message, not separate
+    # FAQ cards/blocks.
+    return " ".join(" ".join(answer.split()) for answer in answers)
 
 
 # =========================================================
@@ -3608,6 +3676,16 @@ def build_final_message(
 # 18. MAIN AGENT
 # =========================================================
 
+def is_strong_contact_refusal(user_text: str) -> bool:
+    """True when the parent clearly chooses to continue without a phone number."""
+    value = normalize_for_search(user_text)
+    return any(x in value for x in (
+        "nomresiz davam", "nomre vermek istemirem", "nomremi vermek istemirem",
+        "ozum elaqe saxlayaram", "ozum yazaram", "buradan davam edek",
+        "telefon vermeyeceyem", "nomre qeyd etmeyin",
+    ))
+
+
 def handle_refusal(
     lead: dict,
     field: Optional[str],
@@ -3667,6 +3745,11 @@ def handle_refusal(
             )
 
         if field == "phone":
+
+            lead["status"] = "NO_CONTACT"
+            lead["lead_stage"] = "no_contact"
+            lead["application_status"] = "completed"
+            lead["phone_declined"] = True
 
             return (
                 "Başa düşdüm, nömrənizi qeyd etmirik 😊\n\n"
@@ -4133,6 +4216,11 @@ def apply_orchestration_guard(reply: str, lead: dict, analysis: dict) -> str:
     if action == "CLARIFY":
         q = analysis.get("clarification_question")
         if q:
+            pending = lead.setdefault("pending_questions", [])
+            for question in analysis.get("questions") or []:
+                question = str(question).strip()
+                if question and question not in pending:
+                    pending.append(question)
             return q
 
     if action == "HUMAN_HANDOFF":
@@ -4297,6 +4385,9 @@ def lead_agent_reply(
     # 4. İmtina
     # -----------------------------------------------------
     elif intent == "refusal" or is_refusal(user_text):
+        if field_before == "phone" and is_strong_contact_refusal(user_text):
+            counts = lead.setdefault("_refusal_counts", {})
+            counts["phone"] = max(counts.get("phone", 0), 1)
         base = handle_refusal(lead, field_before)
         # İlk imtinada cavab özü sualla bitə bilər; əlavə flow sualı vermirik.
         if base.rstrip().endswith("?"):
@@ -4449,8 +4540,27 @@ def lead_agent_reply(
     # -----------------------------------------------------
     # 13. Bütün sahələr tamamlanıbsa yekunlaşdır
     # -----------------------------------------------------
+    recovered_pending = False
+    pending_questions = list(lead.get("pending_questions") or [])
+    if (
+        pending_questions
+        and intent in ("field_answer", "correction")
+        and not data.get("questions")
+    ):
+        recovered = answer_user_question(
+            user_text=" ".join(pending_questions),
+            lead=lead,
+            faq_min_score=faq_min_score,
+            data={"questions": pending_questions},
+            history=history,
+        )
+        if recovered:
+            reply = recovered
+            recovered_pending = True
+
     if (
         lead.get("status") == "NEW"
+        and not recovered_pending
         and get_next_missing_field(lead) is None
     ):
         final_message = finalize_lead(lead)

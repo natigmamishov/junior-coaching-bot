@@ -1048,6 +1048,145 @@ def test_customer_feedback_round_two():
         repr(full_lead["children"]),
     )
 
+    compound = bot._expand_compound_faq_questions(
+        "Proqram nə qədər vaxt çəkir harada keçirilir hansı saatdadır və s.",
+        ["Proqram nə qədər vaxt çəkir harada keçirilir hansı saatdadır və s."],
+    )
+    check(
+        "punctuation-free multi-intent expands all FAQ topics",
+        len(compound) == 3
+        and any("davam" in q for q in compound)
+        and any("harada" in q for q in compound)
+        and any("saat" in q for q in compound),
+        repr(compound),
+    )
+
+    nine_month_price = bot.answer_special_question(
+        "Qiyməti nə qədərdir 9 aylıq proqramın?", lead
+    )
+    check(
+        "nine-month generic price question gets direct safe answer",
+        nine_month_price is not None
+        and "vahid məbləğ" in nine_month_price
+        and "əsas ehtiyac" not in nine_month_price,
+        repr(nine_month_price),
+    )
+
+    no_phone_lead = bot.create_empty_lead("TEST")
+    no_phone_lead["parent_name"] = "Günel"
+    no_phone_lead["children"][0].update({
+        "name": "Murad", "age": 15, "main_concern": "özgüvən",
+    })
+    original_analyze = bot.analyze_message
+    try:
+        bot.analyze_message = lambda user_text, lead, history=None, faq_candidates=None: {
+            **bot.build_fallback_extraction(user_text),
+            "intent": "refusal", "confidence": 1.0,
+        }
+        no_phone_reply = bot.lead_agent_reply(
+            "Xeyr, nömrəsiz davam edək", no_phone_lead, history=[]
+        )
+    finally:
+        bot.analyze_message = original_analyze
+
+    check(
+        "explicit no-phone preference is accepted on first turn",
+        no_phone_lead["status"] == "NO_CONTACT"
+        and "phone" in no_phone_lead["_skipped_fields"],
+        repr(no_phone_lead),
+    )
+    check(
+        "no-contact response is not duplicated by finalization",
+        no_phone_reply.count("nömrənizi qeyd etmirik") == 1
+        and no_phone_reply.count("məlumatlarınızı qeyd etdim") == 0,
+        repr(no_phone_reply),
+    )
+
+    check(
+        "phone refusal is persisted as an explicit preference",
+        no_phone_lead["phone_declined"] is True
+        and bot.get_next_missing_field(no_phone_lead) is None,
+        repr(no_phone_lead),
+    )
+
+    bot.merge_extracted_information(
+        no_phone_lead,
+        {
+            "corrections": [], "parent_name": "", "parent_title": "",
+            "children": [], "multiple_children": False, "children_count": 0,
+            "phone": "0501234567", "preferred_call_time": "",
+        },
+        "Fikrimi dəyişdim, nömrəm 0501234567",
+    )
+    check(
+        "voluntarily supplied phone reverses declined preference",
+        no_phone_lead["phone"] == "0501234567"
+        and no_phone_lead["phone_declined"] is False,
+        repr(no_phone_lead),
+    )
+    check(
+        "reversed phone preference reopens callback flow",
+        no_phone_lead["status"] == "NEW"
+        and bot.get_next_missing_field(no_phone_lead) == "preferred_call_time",
+        repr(no_phone_lead),
+    )
+
+    refinement_lead = bot.create_empty_lead("TEST")
+    refinement_lead["children"][0]["main_concern"] = "ünsiyyət"
+    refined = bot.merge_extracted_information(
+        refinement_lead,
+        {
+            "intent": "correction",
+            "corrections": [{
+                "field": "main_concern", "child_index": 0, "value": "özgüvən",
+            }],
+            "parent_name": "", "parent_title": "", "children": [],
+            "multiple_children": False, "children_count": 0,
+            "phone": "", "preferred_call_time": "",
+        },
+        "özgüvən",
+    )
+    check(
+        "new concern refinement is not acknowledged as correction",
+        refinement_lead["children"][0]["main_concern"] == "özgüvən"
+        and refined == [],
+        repr((refined, refinement_lead["children"])),
+    )
+
+    composition_lead = bot.create_empty_lead("TEST")
+    original_generate = bot.generate_contextual_kb_answer
+    try:
+        bot.generate_contextual_kb_answer = lambda question, **kwargs: {
+            "Proqram nə qədər davam edir?": "Proqram 9 ay davam edir.",
+            "Görüşlər harada keçirilir?": "Görüşlər ADAS Plaza-da keçirilir.",
+            "Görüşlərin gün və saatları necə müəyyən edilir?": (
+                "Saatla bağlı bazamda dəqiq məlumat yoxdur."
+            ),
+        }.get(question, "Məlumat yoxdur.")
+        composed = bot.answer_user_question(
+            user_text="Proqram nə qədər çəkir, harada keçirilir, hansı saatdadır?",
+            lead=composition_lead,
+            faq_min_score=0.2,
+            data={"questions": [
+                "Proqram nə qədər davam edir?", "Görüşlər harada keçirilir?",
+                "Görüşlərin gün və saatları necə müəyyən edilir?",
+            ]},
+        )
+    finally:
+        bot.generate_contextual_kb_answer = original_generate
+    check(
+        "multi-intent answers are composed as one message",
+        "\n\n" not in composed
+        and "9 ay" in composed and "ADAS Plaza" in composed and "Saatla" in composed,
+        repr(composed),
+    )
+    check(
+        "answered questions leave pending state",
+        composition_lead["pending_questions"] == []
+        and len(composition_lead["resolved_questions"]) == 3,
+        repr(composition_lead),
+    )
+
 def main():
 
     print(
