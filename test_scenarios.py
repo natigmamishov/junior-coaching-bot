@@ -999,6 +999,55 @@ def test_customer_feedback_round_two():
         repr(sibling_lead["children"]),
     )
 
+    clarification_history = [{
+        "role": "assistant",
+        "content": "Düzgün qeyd etməyim üçün məlumatın kimə aid olduğunu dəqiqləşdirə bilərsiniz?",
+    }]
+    clarification_reply = bot._clarification_reference_reply(
+        "Hansı məlumat?", clarification_history
+    )
+    check(
+        "agent resolves reference to its own clarification",
+        clarification_reply is not None
+        and "Əvvəlki mesajınızda" in clarification_reply
+        and "buna ehtiyac yoxdur" in clarification_reply,
+        repr(clarification_reply),
+    )
+
+    price_reply = bot.answer_special_question("Qiymət nə qədərdir?", lead)
+    check(
+        "generic price answer does not re-ask which program",
+        price_reply is not None
+        and "vahid məbləğ" in price_reply
+        and "hansı proqram" not in price_reply.lower(),
+        repr(price_reply),
+    )
+
+    original_analyze = bot.analyze_message
+    try:
+        bot.analyze_message = lambda user_text, lead, history=None, faq_candidates=None: (
+            bot.build_fallback_extraction(user_text)
+        )
+        full_lead = bot.create_empty_lead("TEST")
+        full_history = [
+            {"role": "user", "content": "Bir ailədən 2 uşaq gələ bilərmi?"},
+            {"role": "assistant", "content": sibling_answer or ""},
+        ]
+        full_reply = bot.lead_agent_reply("14 16", full_lead, history=full_history)
+    finally:
+        bot.analyze_message = original_analyze
+
+    check(
+        "full engine returns a response after contextual bare ages",
+        bool(full_reply.strip()),
+        repr(full_reply),
+    )
+    check(
+        "full engine stores both ages without crashing",
+        [child.get("age") for child in full_lead["children"]] == [14, 16],
+        repr(full_lead["children"]),
+    )
+
 def main():
 
     print(

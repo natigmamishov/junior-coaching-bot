@@ -3118,6 +3118,17 @@ def answer_special_question(
             "məsul əməkdaşdan dəqiqləşdirə bilərik."
         )
 
+    generic_price_question = (
+        any(x in value for x in ("qiymet ne qeder", "qiymeti nedir", "qiymet haqqinda"))
+        and not any(x in value for x in ("ferdi", "individual", "bir gorus"))
+    )
+    if generic_price_question:
+        return (
+            "Dəqiq qiymət proqramın müddəti və formatına görə dəyişir; təsdiqlənmiş "
+            "məlumat bazasında vahid məbləğ göstərilməyib. Cari qiyməti öyrənmək üçün "
+            "sizi məsul əməkdaşa yönləndirə bilərəm."
+        )
+
     if (
         any(x in value for x in ("2 usaq", "iki usaq", "2 ovlad", "iki ovlad"))
         and any(x in value for x in ("gele biler", "qatila biler", "qebul", "mumkundur"))
@@ -3881,6 +3892,35 @@ def _contextual_bare_child_ages(
     return ages if multi_child_context else []
 
 
+def _clarification_reference_reply(
+    user_text: str,
+    history: Optional[List[Dict[str, str]]],
+) -> Optional[str]:
+    """Explain the agent's immediately preceding clarification when referenced."""
+    value = normalize_for_search(user_text)
+    if not any(x in value for x in (
+        "hansi melumat", "ne melumat", "neyi deqiqlesdir", "neye aid",
+    )):
+        return None
+
+    previous_assistant = ""
+    for message in reversed(history or []):
+        if message.get("role") == "assistant":
+            previous_assistant = str(message.get("content", "")).strip()
+            break
+    previous_normalized = normalize_for_search(previous_assistant)
+    if not any(x in previous_normalized for x in (
+        "deqiqlesdir", "kime aid", "duzgun qeyd",
+    )):
+        return None
+
+    return (
+        "Əvvəlki mesajınızda məlumatın kimə aid olduğunu dəqiqləşdirmək istəmişdim. "
+        "Amma konkret məlumat paylaşmamısınızsa, buna ehtiyac yoxdur 😊 "
+        "Junior Coaching barədə sualınızı birbaşa yaza bilərsiniz."
+    )
+
+
 def _detect_requested_state_fields(user_text: str) -> List[str]:
     """Detect multi-field recall without collapsing it to one primary field."""
     value = normalize_for_search(user_text)
@@ -4158,11 +4198,13 @@ def lead_agent_reply(
         data["clarification_needed"] = False
         data["clarification_question"] = ""
         data["ambiguity_present"] = False
+        data["handoff_required"] = False
 
     data = verify_analysis(data, user_text=user_text)
 
     requested_state_fields = _detect_requested_state_fields(user_text)
     callback_reference_reply = _callback_reference_reply(user_text, history, lead)
+    clarification_reference_reply = _clarification_reference_reply(user_text, history)
 
     if requested_state_fields:
         data["intent"] = "state_question"
@@ -4179,6 +4221,15 @@ def lead_agent_reply(
     if callback_reference_reply:
         data["intent"] = "callback_reschedule"
         data["preferred_call_time"] = lead.get("preferred_call_time") or ""
+        data["resume_flow"] = False
+        data["clarification_needed"] = False
+        data["ambiguity_present"] = False
+        data["handoff_required"] = False
+
+    if clarification_reference_reply:
+        data["intent"] = "clarification_reference"
+        data["questions"] = []
+        data["is_question"] = False
         data["resume_flow"] = False
         data["clarification_needed"] = False
         data["ambiguity_present"] = False
@@ -4211,7 +4262,10 @@ def lead_agent_reply(
     # -----------------------------------------------------
     # 3. Təhlükəsizlik / handoff / real complaint
     # -----------------------------------------------------
-    if callback_reference_reply:
+    if clarification_reference_reply:
+        reply = clarification_reference_reply
+
+    elif callback_reference_reply:
         reply = callback_reference_reply
 
     elif intent == "safety_risk":
