@@ -38,6 +38,9 @@ from sklearn.pipeline import FeatureUnion
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+from conversation_core import TurnOrchestrator, ensure_canonical_state
+from core_contracts import TurnInput
+
 
 # =========================================================
 # 0. PATHS
@@ -727,6 +730,7 @@ def child_genitive(
 def create_empty_child() -> dict:
 
     return {
+        "child_id": None,
         "name": None,
         "age": None,
         "main_concern": None,
@@ -740,7 +744,7 @@ def create_empty_lead(
     source: str = "CLI",
 ) -> dict:
 
-    return {
+    lead = {
 
         "parent_name": None,
         "parent_title": None,
@@ -794,6 +798,9 @@ def create_empty_lead(
         "_skipped_fields": [],
         "_refusal_counts": {},
     }
+
+    ensure_canonical_state(lead)
+    return lead
 
 
 def ensure_lead_structure(
@@ -4231,7 +4238,7 @@ def apply_orchestration_guard(reply: str, lead: dict, analysis: dict) -> str:
 
     return reply
 
-def lead_agent_reply(
+def _process_legacy_turn(
     user_text: str,
     lead: dict,
     faq_min_score: float = 0.18,
@@ -4583,6 +4590,40 @@ def lead_agent_reply(
     del history[:-MAX_HISTORY_MESSAGES]
 
     return reply
+
+
+_TURN_ORCHESTRATOR = TurnOrchestrator()
+
+
+def lead_agent_reply(
+    user_text: str,
+    lead: dict,
+    faq_min_score: float = 0.18,
+    history: Optional[List[Dict[str, str]]] = None,
+    conversation_id: Optional[str] = None,
+    channel_message_id: Optional[str] = None,
+    channel: str = "web",
+) -> str:
+    """Production entrypoint: typed input -> deterministic orchestrator -> response."""
+    conversation_id = (
+        conversation_id
+        or lead.get("conversation_id")
+        or f"legacy-{id(lead)}"
+    )
+    turn = TurnInput(
+        conversation_id=conversation_id,
+        channel=channel,
+        channel_message_id=channel_message_id or "",
+        text=user_text,
+    )
+    result = _TURN_ORCHESTRATOR.process(
+        turn=turn,
+        state=lead,
+        history=history,
+        handler=_process_legacy_turn,
+        faq_min_score=faq_min_score,
+    )
+    return result.response
 
 
 # =========================================================

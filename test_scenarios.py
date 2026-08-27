@@ -18,6 +18,8 @@ Junior Coaching — reqressiya testləri
 import sys
 
 import bot_engine as bot
+from conversation_core import OutputValidator, TurnOrchestrator
+from core_contracts import PhoneStatus, TurnInput
 
 
 PASSED = []
@@ -1187,6 +1189,39 @@ def test_customer_feedback_round_two():
         repr(composition_lead),
     )
 
+def test_production_architecture_contract():
+    print("\nProduction architecture contract")
+    state = bot.create_empty_lead("TEST")
+    calls = {"count": 0}
+
+    def handler(user_text, lead, faq_min_score, history):
+        calls["count"] += 1
+        lead["parent_name"] = "Aynur"
+        return "Salam, Aynur xanım."
+
+    orchestrator = TurnOrchestrator()
+    turn = TurnInput(
+        conversation_id="conversation-1",
+        channel="test",
+        channel_message_id="message-1",
+        text="Mən Aynuram",
+    )
+    first = orchestrator.process(turn, state, [], handler, 0.2)
+    second = orchestrator.process(turn, state, [], handler, 0.2)
+
+    check("canonical schema version exists", state["schema_version"] == 1, repr(state))
+    check("state version increments once", state["state_version"] == 1, repr(state))
+    check("duplicate message does not run handler", calls["count"] == 1, repr(calls))
+    check("duplicate returns original response", second.duplicate and second.response == first.response, repr(second))
+    check("turn trace stores state diff", bool(state["_turn_traces"][0]["state_diff"]), repr(state["_turn_traces"]))
+    check("turn trace stores build versions", state["_last_turn_trace"]["kb_version"] == "faq-v1", repr(state["_last_turn_trace"]))
+    check("children receive stable IDs", bool(state["children"][0]["child_id"]), repr(state["children"]))
+    check("phone status is canonical enum value", state["phone_status"] == PhoneStatus.UNKNOWN.value, repr(state))
+
+    validation = OutputValidator().validate("", [])
+    check("output validator blocks empty response", not validation["valid"] and "empty_response" in validation["violations"], repr(validation))
+
+
 def main():
 
     print(
@@ -1205,6 +1240,7 @@ def main():
     test_no_contact_finalization()
     test_core_engine_contract()
     test_customer_feedback_round_two()
+    test_production_architecture_contract()
 
     if "--live" in sys.argv:
 

@@ -662,6 +662,7 @@ if True:  # A completed application does not close the conversation.
                 {
                     "role": "user",
                     "content": user_text,
+                    "message_id": str(uuid.uuid4()),
                 }
             )
 
@@ -700,6 +701,9 @@ if True:  # A completed application does not close the conversation.
                         history=(
                             st.session_state.messages[:-1]
                         ),
+                        conversation_id=st.session_state.session_id,
+                        channel_message_id=st.session_state.messages[-1]["message_id"],
+                        channel="streamlit",
                     )
                 )
 
