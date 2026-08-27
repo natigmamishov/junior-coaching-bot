@@ -3118,6 +3118,16 @@ def answer_special_question(
             "məsul əməkdaşdan dəqiqləşdirə bilərik."
         )
 
+    if (
+        any(x in value for x in ("2 usaq", "iki usaq", "2 ovlad", "iki ovlad"))
+        and any(x in value for x in ("gele biler", "qatila biler", "qebul", "mumkundur"))
+    ):
+        return (
+            "Bir ailədən iki uşağın eyni qəbul dövründə iştirak qaydası təsdiqlənmiş "
+            "məlumat bazasında dəqiq göstərilməyib. Hər iki uşağın yaşını qeyd etsəniz, "
+            "uyğunluğu məsul əməkdaşdan dəqiqləşdirə bilərik."
+        )
+
     if is_child_presence_question(
         user_text
     ):
@@ -3847,6 +3857,30 @@ def _detect_state_question_type(
 
 
 # =========================================================
+def _contextual_bare_child_ages(
+    user_text: str,
+    history: Optional[List[Dict[str, str]]],
+) -> List[int]:
+    """Resolve a terse numeric reply as multiple child ages only from context."""
+    compact = re.sub(r"[\s,;/\-]+", " ", user_text.strip())
+    if not compact or re.sub(r"[0-9 ]", "", compact):
+        return []
+
+    ages = extract_all_ages(compact)
+    if len(ages) < 2:
+        return []
+
+    context = " ".join(
+        normalize_for_search(message.get("content", ""))
+        for message in (history or [])[-6:]
+    )
+    multi_child_context = any(x in context for x in (
+        "2 usaq", "iki usaq", "2 ovlad", "iki ovlad",
+        "her iki usag", "her iki ovlad", "usaqlarin yas",
+    ))
+    return ages if multi_child_context else []
+
+
 def _detect_requested_state_fields(user_text: str) -> List[str]:
     """Detect multi-field recall without collapsing it to one primary field."""
     value = normalize_for_search(user_text)
@@ -3961,7 +3995,7 @@ def decide_next_step_policy(lead: dict, analysis: dict) -> str:
     return "CONTINUE"
 
 
-def verify_analysis(analysis: dict) -> dict:
+def verify_analysis(analysis: dict, user_text: str = "") -> dict:
     """Normalize and validate the LLM output before it can mutate state."""
     analysis.setdefault("intents", [analysis.get("intent", "field_answer")])
     analysis.setdefault("questions", [])
@@ -3972,10 +4006,37 @@ def verify_analysis(analysis: dict) -> dict:
     analysis.setdefault("handoff_required", False)
     analysis.setdefault("reasoning_summary", "")
 
+    normalized_user = normalize_for_search(user_text).strip()
+    pure_greeting = normalized_user in {
+        "salam", "salamlar", "salam necesiniz", "salam necesiz",
+        "her vaxtiniz xeyir", "gununuz xeyir",
+    }
+
+    # A pure greeting carries no entity. Some model responses include a child
+    # object whose fields are all empty; that must never trigger clarification.
+    if pure_greeting:
+        analysis["intent"] = "greeting"
+        analysis["intents"] = ["greeting"]
+        analysis["parent_name"] = ""
+        analysis["children"] = []
+        analysis["phone"] = ""
+        analysis["preferred_call_time"] = ""
+        analysis["clarification_needed"] = False
+        analysis["clarification_question"] = ""
+        analysis["ambiguity_present"] = False
+        analysis["handoff_required"] = False
+        return analysis
+
     confidence = float(analysis.get("confidence") or 0)
-    uncertain_entities = any(
-        analysis.get(key)
-        for key in ("parent_name", "children", "preferred_call_time")
+    meaningful_children = any(
+        isinstance(child, dict)
+        and any(child.get(key) not in (None, "", 0) for key in ("name", "age", "main_concern"))
+        for child in (analysis.get("children") or [])
+    )
+    uncertain_entities = bool(
+        str(analysis.get("parent_name") or "").strip()
+        or meaningful_children
+        or str(analysis.get("preferred_call_time") or "").strip()
     )
     if confidence < 0.45 and uncertain_entities:
         analysis["clarification_needed"] = True
@@ -4083,7 +4144,22 @@ def lead_agent_reply(
         history=history,
         faq_candidates=faq_candidates,
     )
-    data = verify_analysis(data)
+
+    contextual_ages = _contextual_bare_child_ages(user_text, history)
+    if contextual_ages:
+        data["intent"] = "field_answer"
+        data["children"] = [
+            {"name": "", "age": age, "main_concern": ""}
+            for age in contextual_ages
+        ]
+        data["multiple_children"] = True
+        data["children_count"] = len(contextual_ages)
+        data["confidence"] = 1.0
+        data["clarification_needed"] = False
+        data["clarification_question"] = ""
+        data["ambiguity_present"] = False
+
+    data = verify_analysis(data, user_text=user_text)
 
     requested_state_fields = _detect_requested_state_fields(user_text)
     callback_reference_reply = _callback_reference_reply(user_text, history, lead)

@@ -932,6 +932,73 @@ def test_customer_feedback_round_two():
         repr(duration),
     )
 
+    greeting_analysis = bot.verify_analysis(
+        {
+            "intent": "greeting", "confidence": 0.1,
+            "parent_name": "Salam",
+            "children": [{"name": "", "age": 0, "main_concern": ""}],
+            "preferred_call_time": "", "clarification_needed": True,
+            "clarification_question": "Məlumat kimə aiddir?",
+        },
+        user_text="Salam",
+    )
+    check(
+        "pure greeting never triggers entity clarification",
+        greeting_analysis["intent"] == "greeting"
+        and not greeting_analysis["clarification_needed"]
+        and not greeting_analysis["parent_name"]
+        and greeting_analysis["children"] == [],
+        repr(greeting_analysis),
+    )
+
+    sibling_answer = bot.answer_special_question(
+        "Bir ailədən 2 uşaq gələ bilərmi?", lead
+    )
+    check(
+        "two-child policy question gets specific safe answer",
+        sibling_answer is not None
+        and "dəqiq göstərilməyib" in sibling_answer
+        and "Hər iki uşağın yaşını" in sibling_answer,
+        repr(sibling_answer),
+    )
+
+    sibling_history = [
+        {"role": "user", "content": "Bir ailədən 2 uşaq gələ bilərmi?"},
+        {"role": "assistant", "content": sibling_answer or ""},
+    ]
+    ages = bot._contextual_bare_child_ages("14 16", sibling_history)
+    check(
+        "bare ages resolve to two children from conversation context",
+        ages == [14, 16],
+        repr(ages),
+    )
+    check(
+        "bare ages without child context are not guessed",
+        bot._contextual_bare_child_ages("14 16", []) == [],
+        "unexpected extraction",
+    )
+
+    sibling_lead = bot.create_empty_lead("TEST")
+    bot.merge_extracted_information(
+        sibling_lead,
+        {
+            "children": [
+                {"name": "", "age": age, "main_concern": ""}
+                for age in ages
+            ],
+            "multiple_children": True,
+            "children_count": len(ages),
+            "corrections": [], "parent_name": "", "parent_title": "",
+            "phone": "", "preferred_call_time": "",
+        },
+        "14 16",
+    )
+    check(
+        "both contextual ages persist in separate child state",
+        [child.get("age") for child in sibling_lead["children"]] == [14, 16],
+        repr(sibling_lead["children"]),
+    )
+
 def main():
 
     print(
