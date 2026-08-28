@@ -769,6 +769,7 @@ def create_empty_lead(
         "phone": None,
         "preferred_call_time": None,
         "phone_declined": False,
+        "contact_requested": False,
         "pending_questions": [],
         "resolved_questions": [],
 
@@ -848,6 +849,7 @@ def ensure_lead_structure(
     lead.setdefault("handoff_status", "none")
     lead.setdefault("owner", "ai")
     lead.setdefault("phone_declined", False)
+    lead.setdefault("contact_requested", False)
     lead.setdefault("pending_questions", [])
     lead.setdefault("resolved_questions", [])
 
@@ -2535,6 +2537,7 @@ def merge_extracted_information(
             "phone"
         ] = phone
         lead["phone_declined"] = False
+        lead["contact_requested"] = True
         for skipped_field in ("phone", "preferred_call_time"):
             if skipped_field in lead.get("_skipped_fields", []):
                 lead["_skipped_fields"].remove(skipped_field)
@@ -2806,7 +2809,7 @@ def get_next_missing_field(
                     lead
                 )
 
-    if not lead.get("phone_declined") and is_missing(
+    if lead.get("contact_requested") and not lead.get("phone_declined") and is_missing(
         "phone",
         lead.get(
             "phone"
@@ -3158,7 +3161,10 @@ def answer_special_question(
 
     generic_price_question = (
         "qiymet" in value
-        and any(x in value for x in ("ne qeder", "nedir", "haqqinda"))
+        and any(x in value for x in (
+            "ne qeder", "nedir", "haqqinda", "deyesiz", "deyin",
+            "bilmek", "oyrenmek", "hesabla",
+        ))
         and not any(x in value for x in ("ferdi", "individual", "bir gorus"))
     )
     if generic_price_question:
@@ -3590,6 +3596,25 @@ def answer_user_question(
 # 17. FINAL MESSAGE
 # =========================================================
 
+def should_finalize_lead(lead: dict) -> bool:
+    """A chat-only discovery is never a completed application."""
+    return bool(
+        lead.get("contact_requested")
+        and lead.get("phone")
+        and get_next_missing_field(lead) is None
+    )
+
+
+def build_chat_continuation(lead: dict) -> str:
+    child = get_active_child(lead)
+    concern = child.get("main_concern")
+    if concern:
+        return (
+            f"Qeyd etdim: əsas mövzu {concern}-dir. Buradan davam edə bilərik 😊 "
+            "Proqramla bağlı hansı məlumatı dəqiqləşdirmək istəyirsiniz?"
+        )
+    return "Əlbəttə, buradan davam edə bilərik 😊 Sualınızı yaza bilərsiniz."
+
 def finalize_lead(
     lead: dict,
 ) -> str:
@@ -3690,6 +3715,17 @@ def is_strong_contact_refusal(user_text: str) -> bool:
         "nomresiz davam", "nomre vermek istemirem", "nomremi vermek istemirem",
         "ozum elaqe saxlayaram", "ozum yazaram", "buradan davam edek",
         "telefon vermeyeceyem", "nomre qeyd etmeyin",
+        "xeyr buradan", "buradan cavablayin", "buradan yazin",
+    ))
+
+
+def prefers_chat_only(user_text: str) -> bool:
+    """Detect an explicit preference to continue in the current chat channel."""
+    value = normalize_for_search(user_text)
+    return any(x in value for x in (
+        "buradan cavablayin", "buradan davam", "buradan yazin",
+        "buradan yaza bilersiz", "buradan sual cavab", "ozum elaqe saxlayaram",
+        "nomresiz davam", "telefon istemirem", "nomre vermek istemirem",
     ))
 
 
@@ -3753,9 +3789,9 @@ def handle_refusal(
 
         if field == "phone":
 
-            lead["status"] = "NO_CONTACT"
-            lead["lead_stage"] = "no_contact"
-            lead["application_status"] = "completed"
+            lead["status"] = "NEW"
+            lead["lead_stage"] = "discovery"
+            lead["application_status"] = "in_progress"
             lead["phone_declined"] = True
 
             return (
@@ -4016,7 +4052,7 @@ def _detect_requested_state_fields(user_text: str) -> List[str]:
     value = normalize_for_search(user_text)
     recall_signal = any(x in value for x in (
         "bilirsiniz", "bilirsiz", "qeyd etmisiniz", "qeyd etmisiz",
-        "demisdim", "yadinizda", "goturmusunuz",
+        "qeyd etmisem", "demisdim", "yadinizda", "goturmusunuz", "yuxarida",
     ))
     if not recall_signal:
         return []
@@ -4026,6 +4062,11 @@ def _detect_requested_state_fields(user_text: str) -> List[str]:
         fields.append("phone")
     if any(x in value for x in ("yasi", "yasini", "nece yas")):
         fields.append("child_age")
+    if any(x in value for x in (
+        "narahatlig", "narahatligimi", "esas ehtiyac", "problemi qeyd",
+        "ne demisdim",
+    )):
+        fields.append("main_concern")
     if any(x in value for x in ("zeng vaxt", "hansi vaxt", "hansi saat")):
         fields.append("preferred_call_time")
     if any(x in value for x in (
@@ -4300,6 +4341,25 @@ def _process_legacy_turn(
     requested_state_fields = _detect_requested_state_fields(user_text)
     callback_reference_reply = _callback_reference_reply(user_text, history, lead)
     clarification_reference_reply = _clarification_reference_reply(user_text, history)
+    chat_only_preference = prefers_chat_only(user_text)
+
+    if data.get("intent") == "registration_request" or data.get("ready_to_proceed"):
+        lead["contact_requested"] = True
+    if callback_reference_reply:
+        lead["contact_requested"] = True
+
+    if chat_only_preference:
+        lead["phone_declined"] = True
+        lead["contact_requested"] = False
+        lead["status"] = "NEW"
+        lead["application_status"] = "in_progress"
+        skipped = lead.setdefault("_skipped_fields", [])
+        for field in ("phone", "preferred_call_time"):
+            if field not in skipped:
+                skipped.append(field)
+        data["clarification_needed"] = False
+        data["ambiguity_present"] = False
+        data["handoff_required"] = False
 
     if requested_state_fields:
         data["intent"] = "state_question"
@@ -4357,7 +4417,10 @@ def _process_legacy_turn(
     # -----------------------------------------------------
     # 3. Təhlükəsizlik / handoff / real complaint
     # -----------------------------------------------------
-    if clarification_reference_reply:
+    if chat_only_preference:
+        reply = build_chat_continuation(lead)
+
+    elif clarification_reference_reply:
         reply = clarification_reference_reply
 
     elif callback_reference_reply:
@@ -4467,8 +4530,10 @@ def _process_legacy_turn(
                 user_text=user_text,
             )
 
-        if get_next_missing_field(lead) is None:
+        if should_finalize_lead(lead):
             reply = finalize_lead(lead)
+        elif get_next_missing_field(lead) is None:
+            reply = build_chat_continuation(lead)
         else:
             reply = append_next_question("", lead, with_bridge=False)
 
@@ -4509,10 +4574,12 @@ def _process_legacy_turn(
     # -----------------------------------------------------
     elif corrected:
         ack = build_correction_ack(corrected)
-        if get_next_missing_field(lead) is None:
+        if should_finalize_lead(lead):
             reply = finalize_lead(lead)
             if ack:
                 reply = ack + "\n\n" + reply
+        elif get_next_missing_field(lead) is None:
+            reply = ack or build_chat_continuation(lead)
         else:
             reply = append_next_question(
                 ack,
@@ -4534,8 +4601,10 @@ def _process_legacy_turn(
                 user_text=user_text,
             )
 
-        if get_next_missing_field(lead) is None:
+        if should_finalize_lead(lead):
             reply = finalize_lead(lead)
+        elif get_next_missing_field(lead) is None:
+            reply = build_chat_continuation(lead)
         else:
             prefix = build_correction_ack(corrected)
             reply = append_next_question(
@@ -4568,7 +4637,7 @@ def _process_legacy_turn(
     if (
         lead.get("status") == "NEW"
         and not recovered_pending
-        and get_next_missing_field(lead) is None
+        and should_finalize_lead(lead)
     ):
         final_message = finalize_lead(lead)
 

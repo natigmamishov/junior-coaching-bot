@@ -1093,14 +1093,16 @@ def test_customer_feedback_round_two():
 
     check(
         "explicit no-phone preference is accepted on first turn",
-        no_phone_lead["status"] == "NO_CONTACT"
+        no_phone_lead["status"] == "NEW"
+        and no_phone_lead["phone_declined"] is True
         and "phone" in no_phone_lead["_skipped_fields"],
         repr(no_phone_lead),
     )
     check(
         "no-contact response is not duplicated by finalization",
-        no_phone_reply.count("nömrənizi qeyd etmirik") == 1
-        and no_phone_reply.count("məlumatlarınızı qeyd etdim") == 0,
+        "nömrənizi" not in no_phone_reply.lower()
+        and "məlumatlarınızı qeyd etdim" not in no_phone_reply.lower()
+        and "buradan davam" in no_phone_reply.lower(),
         repr(no_phone_reply),
     )
 
@@ -1187,6 +1189,44 @@ def test_customer_feedback_round_two():
         composition_lead["pending_questions"] == []
         and len(composition_lead["resolved_questions"]) == 3,
         repr(composition_lead),
+    )
+
+    chat_lead = bot.create_empty_lead("TEST")
+    chat_lead["parent_name"] = "Günay"
+    chat_lead["children"][0].update({"name": "Tahir", "age": 14})
+    original_analyze = bot.analyze_message
+    try:
+        bot.analyze_message = lambda user_text, lead, history=None, faq_candidates=None: {
+            **bot.build_fallback_extraction(user_text),
+            "intent": "field_answer", "confidence": 1.0,
+        }
+        chat_reply = bot.lead_agent_reply(
+            "Xeyr, buradan cavablayın", chat_lead, history=[]
+        )
+    finally:
+        bot.analyze_message = original_analyze
+    check(
+        "chat-only request permanently disables phone funnel",
+        chat_lead["phone_declined"] is True
+        and chat_lead["contact_requested"] is False
+        and "telefon" not in chat_reply.lower()
+        and "nömr" not in chat_reply.lower(),
+        repr((chat_reply, chat_lead)),
+    )
+    check(
+        "chat-only discovery is not marked completed",
+        chat_lead["status"] == "NEW"
+        and chat_lead["application_status"] == "in_progress",
+        repr(chat_lead),
+    )
+
+    recall_fields = bot._detect_requested_state_fields(
+        "Yaşını yuxarıda qeyd etmişəm, narahatlığımı da"
+    )
+    check(
+        "age and concern recall request keeps both fields",
+        recall_fields == ["child_age", "main_concern"],
+        repr(recall_fields),
     )
 
 def test_production_architecture_contract():
