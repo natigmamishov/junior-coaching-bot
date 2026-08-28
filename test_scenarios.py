@@ -505,8 +505,8 @@ def test_refusal():
     )
 
     check(
-        "birinci imtinada sahə keçilmir",
-        "phone" not in lead["_skipped_fields"],
+        "birinci telefon imtinası dərhal qəbul edilir",
+        "phone" in lead["_skipped_fields"] and lead["phone_declined"],
     )
 
     bot.handle_refusal(
@@ -1262,6 +1262,70 @@ def test_production_architecture_contract():
     check("output validator blocks empty response", not validation["valid"] and "empty_response" in validation["violations"], repr(validation))
 
 
+def test_consultative_discovery_order():
+    print("\nConsultative discovery order")
+
+    lead = bot.create_empty_lead("TEST")
+    check(
+        "first discovery question is the parent's concern",
+        bot.get_next_missing_field(lead) == "main_concern",
+        repr(lead),
+    )
+
+    child = bot.get_active_child(lead)
+    child["main_concern"] = "məktəbdə özünü ifadə etmək"
+    bot.sync_flat_fields(lead)
+    check(
+        "age follows the concern",
+        bot.get_next_missing_field(lead) == "child_age",
+        repr(lead),
+    )
+
+    child["age"] = 14
+    bot.sync_flat_fields(lead)
+    check(
+        "names and phone are not required during discovery",
+        bot.get_next_missing_field(lead) is None,
+        repr(lead),
+    )
+
+    lead["contact_requested"] = True
+    check(
+        "name collection opens only in explicit contact stage",
+        bot.get_next_missing_field(lead) == "parent_name",
+        repr(lead),
+    )
+
+    lead["parent_name"] = "Aysel"
+    check(
+        "child name is collected late with contact details",
+        bot.get_next_missing_field(lead) == "child_name",
+        repr(lead),
+    )
+
+    child["name"] = "Tural"
+    bot.sync_flat_fields(lead)
+    check(
+        "phone follows late-stage names",
+        bot.get_next_missing_field(lead) == "phone",
+        repr(lead),
+    )
+
+    bot.continue_without_phone(lead)
+    check(
+        "unanswered phone prompt is not repeated",
+        bot.get_next_missing_field(lead) is None and not lead["contact_requested"],
+        repr(lead),
+    )
+
+    acknowledgement = bot.build_field_ack("main_concern", lead)
+    check(
+        "field answers receive a human acknowledgement",
+        acknowledgement.startswith("Anladım"),
+        acknowledgement,
+    )
+
+
 def main():
 
     print(
@@ -1281,6 +1345,7 @@ def main():
     test_core_engine_contract()
     test_customer_feedback_round_two()
     test_production_architecture_contract()
+    test_consultative_discovery_order()
 
     if "--live" in sys.argv:
 

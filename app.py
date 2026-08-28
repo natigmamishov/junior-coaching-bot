@@ -30,7 +30,7 @@ WELCOME_MESSAGE = (
     "Salam, xoş gəlmisiniz 🙏 "
     "Junior Coaching proqramına maraq göstərdiyiniz üçün "
     "təşəkkür edirik. "
-    "Sizə necə müraciət edə bilərəm?"
+    "Övladınızla bağlı sizi ən çox düşündürən məsələ nədir?"
 )
 
 

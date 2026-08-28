@@ -2597,14 +2597,6 @@ def child_is_complete(
         return not value
 
     if missing(
-        "child_name",
-        child.get(
-            "name"
-        ),
-    ):
-        return False
-
-    if missing(
         "child_age",
         child.get(
             "age"
@@ -2721,15 +2713,6 @@ def get_next_missing_field(
 
         return not value
 
-    if is_missing(
-        "parent_name",
-        lead.get(
-            "parent_name"
-        ),
-    ):
-
-        return "parent_name"
-
     advance_child_if_needed(
         lead
     )
@@ -2739,13 +2722,13 @@ def get_next_missing_field(
     )
 
     if is_missing(
-        "child_name",
+        "main_concern",
         child.get(
-            "name"
+            "main_concern"
         ),
     ):
 
-        return "child_name"
+        return "main_concern"
 
     if is_missing(
         "child_age",
@@ -2755,15 +2738,6 @@ def get_next_missing_field(
     ):
 
         return "child_age"
-
-    if is_missing(
-        "main_concern",
-        child.get(
-            "main_concern"
-        ),
-    ):
-
-        return "main_concern"
 
     if child.get(
         "needs_concern_followup"
@@ -2808,6 +2782,22 @@ def get_next_missing_field(
                 return get_next_missing_field(
                     lead
                 )
+
+    # Ad və əlaqə məlumatları konsultativ discovery mərhələsində tələb edilmir.
+    # Yalnız istifadəçi qeydiyyat/zəng istəyəndə kontakt mərhələsi açılır.
+    if lead.get("contact_requested") and is_missing(
+        "parent_name",
+        lead.get("parent_name"),
+    ):
+
+        return "parent_name"
+
+    if lead.get("contact_requested") and is_missing(
+        "child_name",
+        child.get("name"),
+    ):
+
+        return "child_name"
 
     if lead.get("contact_requested") and not lead.get("phone_declined") and is_missing(
         "phone",
@@ -3760,6 +3750,16 @@ def handle_refusal(
         0,
     ) + 1
 
+    # Telefon könüllü məlumatdır: ilk imtinanı dərhal qəbul edirik və
+    # səbəb izah edib yenidən razı salmağa çalışmırıq.
+    if field == "phone":
+        continue_without_phone(lead)
+        lead["phone_declined"] = True
+        return (
+            "Başa düşdüm, nömrənizi qeyd etmirik 😊 "
+            "Buradan davam edə və suallarınızı yaza bilərsiniz."
+        )
+
     # -------------------------------------------------
     # İkinci imtina — sahə keçilir
     # -------------------------------------------------
@@ -3855,6 +3855,34 @@ def build_correction_ack(
         return "Düzəliş üçün təşəkkür edirəm."
 
     return "Düzəldim, təşəkkür edirəm."
+
+
+def build_field_ack(field: Optional[str], lead: dict) -> str:
+    """Yeni məlumatı qısa və insani şəkildə təsdiqləyir."""
+    if field == "main_concern":
+        return "Anladım, qeyd etdim."
+    if field == "child_age":
+        return "Başa düşdüm, yaşını qeyd etdim."
+    if field == "child_name":
+        return "Təşəkkür edirəm, adını qeyd etdim."
+    if field == "parent_name":
+        parent = get_parent_display_name(lead)
+        return f"Məmnun oldum, {parent}." if parent else "Təşəkkür edirəm, qeyd etdim."
+    if field == "preferred_call_time":
+        return "Uyğundur, qeyd etdim."
+    return ""
+
+
+def continue_without_phone(lead: dict) -> None:
+    """Telefon cavabı gəlməyəndə eyni sualda dirəşməni dayandırır."""
+    lead["contact_requested"] = False
+    lead["status"] = "NEW"
+    lead["lead_stage"] = "discovery"
+    lead["application_status"] = "in_progress"
+    skipped = lead.setdefault("_skipped_fields", [])
+    for field in ("phone", "preferred_call_time"):
+        if field not in skipped:
+            skipped.append(field)
 
 
 def track_asked_field(
@@ -4343,7 +4371,10 @@ def _process_legacy_turn(
     clarification_reference_reply = _clarification_reference_reply(user_text, history)
     chat_only_preference = prefers_chat_only(user_text)
 
-    if data.get("intent") == "registration_request" or data.get("ready_to_proceed"):
+    # LLM-in ehtimal etdiyi `ready_to_proceed` təkbaşına telefon funnel-ını
+    # aktivləşdirə bilməz. Bunun üçün istifadəçinin açıq qeydiyyat/zəng istəyi
+    # olmalıdır.
+    if data.get("intent") == "registration_request":
         lead["contact_requested"] = True
     if callback_reference_reply:
         lead["contact_requested"] = True
@@ -4535,7 +4566,11 @@ def _process_legacy_turn(
         elif get_next_missing_field(lead) is None:
             reply = build_chat_continuation(lead)
         else:
-            reply = append_next_question("", lead, with_bridge=False)
+            reply = append_next_question(
+                build_field_ack("main_concern", lead),
+                lead,
+                with_bridge=False,
+            )
 
     # -----------------------------------------------------
     # 10. REAL sual(lar) — ƏVVƏL hamısını cavablandır
@@ -4601,12 +4636,34 @@ def _process_legacy_turn(
                 user_text=user_text,
             )
 
-        if should_finalize_lead(lead):
+        # Telefon əvəzinə başqa cavab və ya natamam rəqəm gəlibsə eyni
+        # telefon sualını yenidən məcbur etmirik. İstifadəçi sonradan düzgün
+        # nömrəni könüllü göndərərsə merge qatı kontakt mərhələsini yenidən açır.
+        if (
+            field_before == "phone"
+            and not lead.get("phone")
+            and intent in ("field_answer", "correction")
+            and not data.get("questions")
+        ):
+            continue_without_phone(lead)
+            digits = re.sub(r"\D", "", user_text)
+            if digits:
+                reply = (
+                    "Bu nömrə tam görünmür, ona görə qeyd etmədim. "
+                    "Problem deyil — buradan davam edə bilərik; "
+                    "istəsəniz düzgün nömrəni sonra yazarsınız."
+                )
+            else:
+                reply = "Başa düşdüm. Nömrəsiz buradan davam edə bilərik 😊"
+
+        if reply is not None:
+            pass
+        elif should_finalize_lead(lead):
             reply = finalize_lead(lead)
         elif get_next_missing_field(lead) is None:
             reply = build_chat_continuation(lead)
         else:
-            prefix = build_correction_ack(corrected)
+            prefix = build_correction_ack(corrected) or build_field_ack(field_before, lead)
             reply = append_next_question(
                 prefix,
                 lead,
