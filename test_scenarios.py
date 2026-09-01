@@ -1325,6 +1325,34 @@ def test_consultative_discovery_order():
         acknowledgement,
     )
 
+    check(
+        "mere program interest does not open contact funnel",
+        not bot.is_explicit_contact_request(
+            "Salam, 15 yaşlı oğlum üçün maraqlanıram"
+        ),
+    )
+    check(
+        "explicit registration opens contact funnel",
+        bot.is_explicit_contact_request("Qeydiyyatdan keçmək istəyirəm"),
+    )
+
+    overview = bot.answer_special_question(
+        "Adım Aygündür. Proqram barədə qısa məlumat verə bilərsiniz?",
+        lead,
+    )
+    check(
+        "general program overview gets a direct approved answer",
+        bool(overview) and "12–18" in overview and "inkişaf proqramıdır" in overview,
+        repr(overview),
+    )
+
+    check(
+        "explicit age correction is detected without LLM",
+        bot.explicit_age_correction(
+            "Yeri gəlmişkən, səhv demişəm, oğlum 15 yox, 16 yaşındadır."
+        ) == 16,
+    )
+
 
 def main():
 

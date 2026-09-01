@@ -205,6 +205,23 @@ def extract_all_ages(
     return result
 
 
+def explicit_age_correction(text: str) -> Optional[int]:
+    """Aydın yaş düzəlişini LLM gözləmədən tutur."""
+    value = normalize_for_search(text)
+    patterns = (
+        r"\b\d{1,2}\s*(?:yox|deyil)\s*[,;:-]?\s*(\d{1,2})\b",
+        r"\bseh?v\s+demisem?\b.*?\b(\d{1,2})\s*yas",
+        r"\bduzelis\b.*?\b(\d{1,2})\s*yas",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, value)
+        if match:
+            age = int(match.group(1))
+            if 1 <= age <= 99:
+                return age
+    return None
+
+
 def is_greeting(
     text: str,
 ) -> bool:
@@ -3139,6 +3156,24 @@ def answer_special_question(
 ) -> Optional[str]:
 
     value = normalize_for_search(user_text)
+    program_overview_question = (
+        "proqram" in value
+        and any(x in value for x in (
+            "qisa melumat", "melumat ver", "haqqinda melumat",
+            "barede melumat", "nedir",
+        ))
+        and not any(x in value for x in (
+            "qiymet", "harada", "unvan", "ne qeder", "muddet",
+            "hansi gun", "hansi saat",
+        ))
+    )
+    if program_overview_question:
+        return (
+            "Junior Coaching 12–18 yaşlı yeniyetmələr üçün inkişaf proqramıdır. "
+            "Proqram özgüvən, ünsiyyət, liderlik, emosional zəka, fokus və "
+            "qərarvermə bacarıqlarını praktik şəkildə inkişaf etdirməyə yönəlib."
+        )
+
     if (
         any(x in value for x in ("tanisliq", "ilkin gorus", "ilkin zeng"))
         and any(x in value for x in ("odenis", "pulsuz", "qiymet"))
@@ -3716,6 +3751,17 @@ def prefers_chat_only(user_text: str) -> bool:
         "buradan cavablayin", "buradan davam", "buradan yazin",
         "buradan yaza bilersiz", "buradan sual cavab", "ozum elaqe saxlayaram",
         "nomresiz davam", "telefon istemirem", "nomre vermek istemirem",
+    ))
+
+
+def is_explicit_contact_request(user_text: str) -> bool:
+    """Maraq bildirməyi qeydiyyat və ya zəng istəyi ilə qarışdırmır."""
+    value = normalize_for_search(user_text)
+    return any(x in value for x in (
+        "qeydiyyat etmek isteyirem", "qeydiyyatdan kecmek isteyirem",
+        "muraciet etmek isteyirem", "zeng edin", "zeng etsinler",
+        "menimle elaqe saxlayin", "elaqe saxlasinlar",
+        "gorusu qeyd edin", "zeng ucun qeyd edin", "baslayaq",
     ))
 
 
@@ -4342,12 +4388,34 @@ def _process_legacy_turn(
         min_score=0.03,
     )
 
-    data = analyze_message(
-        user_text=user_text,
-        lead=lead,
-        history=history,
-        faq_candidates=faq_candidates,
-    )
+    corrected_age = explicit_age_correction(user_text)
+    if corrected_age is not None:
+        data = {
+            "intent": "correction",
+            "intents": ["correction"],
+            "corrections": [
+                {"field": "child_age", "child_index": 0, "value": str(corrected_age)}
+            ],
+            "children": [],
+            "questions": [],
+            "objections": [],
+            "confidence": 1.0,
+            "clarification_needed": False,
+            "clarification_question": "",
+            "ambiguity_present": False,
+            "handoff_required": False,
+            "is_question": False,
+            "resume_flow": False,
+            "topic_open": False,
+            "ready_to_proceed": False,
+        }
+    else:
+        data = analyze_message(
+            user_text=user_text,
+            lead=lead,
+            history=history,
+            faq_candidates=faq_candidates,
+        )
 
     contextual_ages = _contextual_bare_child_ages(user_text, history)
     if contextual_ages:
@@ -4374,7 +4442,10 @@ def _process_legacy_turn(
     # LLM-in ehtimal etdiyi `ready_to_proceed` təkbaşına telefon funnel-ını
     # aktivləşdirə bilməz. Bunun üçün istifadəçinin açıq qeydiyyat/zəng istəyi
     # olmalıdır.
-    if data.get("intent") == "registration_request":
+    if (
+        data.get("intent") == "registration_request"
+        and is_explicit_contact_request(user_text)
+    ):
         lead["contact_requested"] = True
     if callback_reference_reply:
         lead["contact_requested"] = True
