@@ -3150,6 +3150,29 @@ def save_current_field_fallback(
 # 15. SPECIAL QUESTION ANSWERS
 # =========================================================
 
+def is_program_overview_request(user_text: str) -> bool:
+    """Ümumi və ya ətraflı proqram məlumatı istəyini human handoff saymır."""
+    value = normalize_for_search(user_text)
+    return (
+        any(x in value for x in (
+            "etrafli melumat", "qisa melumat", "melumat ver",
+            "proqram haqqinda", "proqram barede", "proqrami izah",
+        ))
+        and not any(x in value for x in (
+            "qiymet", "odenis", "harada", "unvan", "ne qeder",
+            "muddet", "hansi gun", "hansi saat",
+        ))
+    )
+
+
+def is_presence_check(user_text: str) -> bool:
+    value = normalize_for_search(user_text).rstrip("?!. ")
+    return value in (
+        "burdasiz", "buradasiz", "burdasan", "buradasan",
+        "ordasiz", "oradasiz", "sesimi esidirsiz",
+    )
+
+
 def answer_special_question(
     user_text: str,
     lead: dict,
@@ -4197,12 +4220,11 @@ def decide_next_step_policy(lead: dict, analysis: dict) -> str:
     LLM cannot directly force sales flow transition.
     """
 
-    # Human ownership always wins
+    # Handoff yalnız onu yaradan cari mesaj üçün üstünlük daşıyır.
+    # State-də əvvəlki handoff qalması söhbəti kilidləməməlidir.
     if (
         analysis.get("handoff_required")
-        or lead.get("handoff_status") == "assigned"
-        or lead.get("owner") == "human"
-        or lead.get("status") == "ESCALATED"
+        or analysis.get("intent") in ("human_agent_request", "safety_risk")
     ):
         return "HUMAN_HANDOFF"
 
@@ -4389,6 +4411,15 @@ def _process_legacy_turn(
     )
 
     corrected_age = explicit_age_correction(user_text)
+    bare_ages = extract_all_ages(user_text)
+    bare_age_answer = (
+        field_before == "child_age"
+        and len(bare_ages) == 1
+        and normalize_for_search(user_text) == str(bare_ages[0])
+    )
+    overview_request = is_program_overview_request(user_text)
+    presence_check = is_presence_check(user_text)
+
     if corrected_age is not None:
         data = {
             "intent": "correction",
@@ -4396,6 +4427,62 @@ def _process_legacy_turn(
             "corrections": [
                 {"field": "child_age", "child_index": 0, "value": str(corrected_age)}
             ],
+            "children": [],
+            "questions": [],
+            "objections": [],
+            "confidence": 1.0,
+            "clarification_needed": False,
+            "clarification_question": "",
+            "ambiguity_present": False,
+            "handoff_required": False,
+            "is_question": False,
+            "resume_flow": False,
+            "topic_open": False,
+            "ready_to_proceed": False,
+        }
+    elif bare_age_answer:
+        data = {
+            "intent": "field_answer",
+            "intents": ["field_answer"],
+            "corrections": [],
+            "children": [
+                {"name": "", "age": bare_ages[0], "main_concern": ""}
+            ],
+            "questions": [],
+            "objections": [],
+            "confidence": 1.0,
+            "clarification_needed": False,
+            "clarification_question": "",
+            "ambiguity_present": False,
+            "handoff_required": False,
+            "is_question": False,
+            "resume_flow": False,
+            "topic_open": False,
+            "ready_to_proceed": False,
+        }
+    elif overview_request:
+        data = {
+            "intent": "program_interest",
+            "intents": ["program_interest"],
+            "corrections": [],
+            "children": [],
+            "questions": [user_text],
+            "objections": [],
+            "confidence": 1.0,
+            "clarification_needed": False,
+            "clarification_question": "",
+            "ambiguity_present": False,
+            "handoff_required": False,
+            "is_question": True,
+            "resume_flow": False,
+            "topic_open": True,
+            "ready_to_proceed": False,
+        }
+    elif presence_check:
+        data = {
+            "intent": "presence_check",
+            "intents": ["presence_check"],
+            "corrections": [],
             "children": [],
             "questions": [],
             "objections": [],
@@ -4521,6 +4608,13 @@ def _process_legacy_turn(
     # -----------------------------------------------------
     if chat_only_preference:
         reply = build_chat_continuation(lead)
+
+    elif intent == "presence_check":
+        base = "Bəli, buradayam 😊"
+        if get_next_missing_field(lead) is not None:
+            reply = append_next_question(base, lead, with_bridge=False)
+        else:
+            reply = base + " Junior Coaching proqramı ilə bağlı sualınızı yaza bilərsiniz."
 
     elif clarification_reference_reply:
         reply = clarification_reference_reply

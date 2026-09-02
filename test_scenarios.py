@@ -1353,6 +1353,36 @@ def test_consultative_discovery_order():
         ) == 16,
     )
 
+    check(
+        "detailed information request stays in assistant",
+        bot.is_program_overview_request("Ətraflı məlumat almaq istəyirəm"),
+    )
+    check(
+        "presence check is recognized",
+        bot.is_presence_check("burdasız?"),
+    )
+
+    handed_off = bot.create_empty_lead("TEST")
+    handed_off["owner"] = "human"
+    handed_off["handoff_status"] = "requested"
+    check(
+        "old handoff state does not freeze later conversation",
+        bot.decide_next_step_policy(
+            handed_off,
+            {"intent": "field_answer", "handoff_required": False,
+             "clarification_needed": False, "ready_to_proceed": False},
+        ) == "CONTINUE",
+    )
+
+    bare_age_lead = bot.create_empty_lead("TEST")
+    bare_age_lead["children"][0]["main_concern"] = "ünsiyyət"
+    bare_age_reply = bot._process_legacy_turn("16", bare_age_lead, history=[])
+    check(
+        "bare age answer is saved and answered without LLM",
+        bare_age_lead["children"][0]["age"] == 16 and bool(bare_age_reply),
+        f"lead={bare_age_lead!r} reply={bare_age_reply!r}",
+    )
+
 
 def main():
 
