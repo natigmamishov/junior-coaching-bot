@@ -173,7 +173,7 @@ Agent: Əlbəttə, bu, övladınızla bağlı vacib qərardır. Daha rahat düş
 Agent: Əlbəttə. İstəsəniz, qərarı birlikdə verməyiniz üçün proqramla bağlı əsas məlumatları hər ikinizin iştirak edə biləcəyi qısa danışıqda izah edə bilərik. Sizə geri dönüş üçün hansı gün və saat uyğun olar?
 
 59. Sual: Sonra özüm zəng edərəm.
-Agent: Əlbəttə. Sizinlə hansı tarixdə yenidən əlaqə saxlamağımız uyğun olar?
+Agent: Əlbəttə, geri zəng planlamırıq. İstədiyiniz vaxt özünüz əlaqə saxlaya bilərsiniz. Bu söhbətdə də suallarınızı yaza bilərsiniz.
 
 60. Sual: Hazırda maddi imkanımız uyğun deyil.
 Agent: Sizi anlayıram. Ailə büdcəsini nəzərə almaq vacibdir. İstəsəniz, uyğun qəbul dövrü və mümkün ödəniş variantları barədə məlumat almağınız üçün müraciətinizi qeyd edə bilərəm.

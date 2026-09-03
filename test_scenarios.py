@@ -1383,6 +1383,32 @@ def test_consultative_discovery_order():
         f"lead={bare_age_lead!r} reply={bare_age_reply!r}",
     )
 
+    check(
+        "contact method question is separated from callback scheduling",
+        bot.is_contact_method_question("Sizinlə necə əlaqə saxlamaq olar?"),
+    )
+    contact_answer = bot.answer_special_question(
+        "Buradan zəng edəcəksiniz, yoxsa nömrəyə?", bare_age_lead
+    )
+    check(
+        "contact channel gets a direct answer",
+        bool(contact_answer) and "telefon nömrəsi" in contact_answer,
+        repr(contact_answer),
+    )
+
+    self_contact_lead = bot.create_empty_lead("TEST")
+    self_contact_lead["contact_requested"] = True
+    self_contact_reply = bot._process_legacy_turn(
+        "Sonra özüm zəng edərəm", self_contact_lead, history=[]
+    )
+    check(
+        "self-contact preference disables callback funnel",
+        self_contact_lead["phone_declined"]
+        and not self_contact_lead["contact_requested"]
+        and "hansı tarixdə" not in self_contact_reply.lower(),
+        f"lead={self_contact_lead!r} reply={self_contact_reply!r}",
+    )
+
 
 def main():
 

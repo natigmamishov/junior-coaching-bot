@@ -3173,12 +3173,44 @@ def is_presence_check(user_text: str) -> bool:
     )
 
 
+def is_contact_method_question(user_text: str) -> bool:
+    """Əlaqə kanalını callback vaxtı sualından ayırır."""
+    value = normalize_for_search(user_text)
+    return any(x in value for x in (
+        "nece elaqe saxlamaq", "nece elaqe saxlayim",
+        "zengle elaqe", "zeng ile elaqe",
+        "buradan zeng", "nomreye zeng", "telefonla elaqe",
+    ))
+
+
+def prefers_self_contact(user_text: str) -> bool:
+    """İstifadəçi özü əlaqə saxlayacaqsa geri zəng funnel-ını bağlayır."""
+    value = normalize_for_search(user_text)
+    return any(x in value for x in (
+        "ozum zeng ederem", "ozum zeng edecem", "ozum elaqe saxlayaram",
+        "ozum elaqe saxlayacam", "sonra zeng ederem", "sonra elaqe saxlayaram",
+    ))
+
+
 def answer_special_question(
     user_text: str,
     lead: dict,
 ) -> Optional[str]:
 
     value = normalize_for_search(user_text)
+    if is_contact_method_question(user_text):
+        if any(x in value for x in ("buradan zeng", "nomreye zeng")):
+            return (
+                "Zəng bu çatın içindən edilmir; geri zəng üçün qeyd etdiyiniz "
+                "telefon nömrəsi ilə əlaqə saxlanılır. İstəsəniz buradan "
+                "yazışaraq da məlumat ala bilərsiniz."
+            )
+        return (
+            "Buradan yazışaraq əlaqə saxlaya bilərsiniz. Geri zəng istəyirsinizsə, "
+            "telefon nömrənizi qeyd etdikdən sonra komanda həmin nömrə ilə "
+            "əlaqə saxlayır."
+        )
+
     program_overview_question = (
         "proqram" in value
         and any(x in value for x in (
@@ -4419,6 +4451,8 @@ def _process_legacy_turn(
     )
     overview_request = is_program_overview_request(user_text)
     presence_check = is_presence_check(user_text)
+    contact_method_question = is_contact_method_question(user_text)
+    self_contact_preference = prefers_self_contact(user_text)
 
     if corrected_age is not None:
         data = {
@@ -4496,6 +4530,27 @@ def _process_legacy_turn(
             "topic_open": False,
             "ready_to_proceed": False,
         }
+    elif contact_method_question:
+        data = {
+            "intent": "faq_question", "intents": ["faq_question"],
+            "corrections": [], "children": [], "questions": [user_text],
+            "objections": [], "confidence": 1.0,
+            "clarification_needed": False, "clarification_question": "",
+            "ambiguity_present": False, "handoff_required": False,
+            "is_question": True, "resume_flow": False, "topic_open": True,
+            "ready_to_proceed": False,
+        }
+    elif self_contact_preference:
+        data = {
+            "intent": "self_contact_preference",
+            "intents": ["self_contact_preference"],
+            "corrections": [], "children": [], "questions": [],
+            "objections": [], "confidence": 1.0,
+            "clarification_needed": False, "clarification_question": "",
+            "ambiguity_present": False, "handoff_required": False,
+            "is_question": False, "resume_flow": False, "topic_open": False,
+            "ready_to_proceed": False,
+        }
     else:
         data = analyze_message(
             user_text=user_text,
@@ -4525,6 +4580,16 @@ def _process_legacy_turn(
     callback_reference_reply = _callback_reference_reply(user_text, history, lead)
     clarification_reference_reply = _clarification_reference_reply(user_text, history)
     chat_only_preference = prefers_chat_only(user_text)
+
+    if self_contact_preference:
+        lead["phone_declined"] = True
+        lead["contact_requested"] = False
+        lead["status"] = "NEW"
+        lead["application_status"] = "in_progress"
+        skipped = lead.setdefault("_skipped_fields", [])
+        for skipped_field in ("phone", "preferred_call_time"):
+            if skipped_field not in skipped:
+                skipped.append(skipped_field)
 
     # LLM-in ehtimal etdiyi `ready_to_proceed` təkbaşına telefon funnel-ını
     # aktivləşdirə bilməz. Bunun üçün istifadəçinin açıq qeydiyyat/zəng istəyi
@@ -4606,7 +4671,13 @@ def _process_legacy_turn(
     # -----------------------------------------------------
     # 3. Təhlükəsizlik / handoff / real complaint
     # -----------------------------------------------------
-    if chat_only_preference:
+    if self_contact_preference:
+        reply = (
+            "Başa düşdüm, geri zəng planlamırıq 😊 İstədiyiniz vaxt özünüz "
+            "əlaqə saxlaya bilərsiniz. Burada da suallarınızı yaza bilərsiniz."
+        )
+
+    elif chat_only_preference:
         reply = build_chat_continuation(lead)
 
     elif intent == "presence_check":
