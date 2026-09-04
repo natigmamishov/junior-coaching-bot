@@ -3157,6 +3157,7 @@ def is_program_overview_request(user_text: str) -> bool:
         any(x in value for x in (
             "etrafli melumat", "qisa melumat", "melumat ver",
             "proqram haqqinda", "proqram barede", "proqrami izah",
+            "xidmetlerinizle maraqlaniram", "xidmet haqqinda",
         ))
         and not any(x in value for x in (
             "qiymet", "odenis", "harada", "unvan", "ne qeder",
@@ -3170,6 +3171,24 @@ def is_presence_check(user_text: str) -> bool:
     return value in (
         "burdasiz", "buradasiz", "burdasan", "buradasan",
         "ordasiz", "oradasiz", "sesimi esidirsiz",
+    )
+
+
+def is_clinical_boundary_question(user_text: str) -> bool:
+    """Coaching səlahiyyətini aşan klinik mövzuları müəyyən edir."""
+    value = normalize_for_search(user_text)
+    return any(x in value for x in (
+        "panik atak", "panika atak", "panik tutma",
+        "klinik depressiya", "psixoloji diaqnoz",
+    ))
+
+
+def is_audience_question(user_text: str) -> bool:
+    value = normalize_for_search(user_text)
+    return (
+        any(x in value for x in ("ancaq", "yalniz", "tekce"))
+        and any(x in value for x in ("usaqlarla", "usaqla", "yeniyetmelerle"))
+        and any(x in value for x in ("isleyirsiz", "isleyirsiniz", "proqram"))
     )
 
 
@@ -3198,6 +3217,23 @@ def answer_special_question(
 ) -> Optional[str]:
 
     value = normalize_for_search(user_text)
+
+    if is_clinical_boundary_question(user_text):
+        return (
+            "Panik atak klinik qiymətləndirmə tələb edə bilən haldır. "
+            "Junior Coaching terapiya və ya klinik psixoloji xidmət deyil və "
+            "panik atakı müalicə etdiyini iddia edə bilməz. Övladınız üçün "
+            "psixoloq və ya uyğun psixi sağlamlıq mütəxəssisinə müraciət etməyiniz "
+            "daha doğrudur. Hazırda təcili təhlükə varsa, yerli təcili yardım "
+            "xidmətinə müraciət edin."
+        )
+
+    if is_audience_question(user_text):
+        return (
+            "Junior Coaching proqramı 12–18 yaşlı yeniyetmələr üçün nəzərdə tutulub. "
+            "Böyüklər üçün ayrıca xidmət barədə təsdiqlənmiş məlumat bazamızda fakt yoxdur."
+        )
+
     if is_contact_method_question(user_text):
         if any(x in value for x in ("buradan zeng", "nomreye zeng")):
             return (
@@ -3241,10 +3277,13 @@ def answer_special_question(
 
     generic_price_question = (
         "qiymet" in value
-        and any(x in value for x in (
+        and (
+            value in ("qiymet", "qiymet vess", "qiymet ve s", "qiymet vesaire")
+            or any(x in value for x in (
             "ne qeder", "nedir", "haqqinda", "deyesiz", "deyin",
-            "bilmek", "oyrenmek", "hesabla",
-        ))
+                "bilmek", "oyrenmek", "hesabla",
+            ))
+        )
         and not any(x in value for x in ("ferdi", "individual", "bir gorus"))
     )
     if generic_price_question:
@@ -3804,6 +3843,7 @@ def prefers_chat_only(user_text: str) -> bool:
     value = normalize_for_search(user_text)
     return any(x in value for x in (
         "buradan cavablayin", "buradan davam", "buradan yazin",
+        "buradan yazinda", "buradan yazin da", "buradan melumat verin",
         "buradan yaza bilersiz", "buradan sual cavab", "ozum elaqe saxlayaram",
         "nomresiz davam", "telefon istemirem", "nomre vermek istemirem",
     ))
@@ -4453,6 +4493,12 @@ def _process_legacy_turn(
     presence_check = is_presence_check(user_text)
     contact_method_question = is_contact_method_question(user_text)
     self_contact_preference = prefers_self_contact(user_text)
+    clinical_boundary_question = is_clinical_boundary_question(user_text)
+    audience_question = is_audience_question(user_text)
+    value_for_routing = normalize_for_search(user_text)
+    vague_price_question = value_for_routing in (
+        "qiymet", "qiymet vess", "qiymet ve s", "qiymet vesaire"
+    )
 
     if corrected_age is not None:
         data = {
@@ -4492,6 +4538,27 @@ def _process_legacy_turn(
             "is_question": False,
             "resume_flow": False,
             "topic_open": False,
+            "ready_to_proceed": False,
+        }
+    elif clinical_boundary_question:
+        data = {
+            "intent": "faq_question", "intents": ["faq_question"],
+            "corrections": [],
+            "children": [{"name": "", "age": None, "main_concern": "panik atak"}],
+            "questions": [user_text], "objections": [], "confidence": 1.0,
+            "clarification_needed": False, "clarification_question": "",
+            "ambiguity_present": False, "handoff_required": False,
+            "is_question": True, "resume_flow": False, "topic_open": True,
+            "ready_to_proceed": False,
+        }
+    elif audience_question or vague_price_question:
+        data = {
+            "intent": "faq_question", "intents": ["faq_question"],
+            "corrections": [], "children": [], "questions": [user_text],
+            "objections": [], "confidence": 1.0,
+            "clarification_needed": False, "clarification_question": "",
+            "ambiguity_present": False, "handoff_required": False,
+            "is_question": True, "resume_flow": False, "topic_open": True,
             "ready_to_proceed": False,
         }
     elif overview_request:

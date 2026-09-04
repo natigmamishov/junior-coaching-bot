@@ -1409,6 +1409,38 @@ def test_consultative_discovery_order():
         f"lead={self_contact_lead!r} reply={self_contact_reply!r}",
     )
 
+    clinical = bot.answer_special_question(
+        "Oğlumda panik atak var, kömək edə bilərsiniz?", bare_age_lead
+    )
+    check(
+        "panic attack never receives a treatment promise",
+        clinical is not None
+        and "terapiya" in clinical
+        and "müalicə etdiyini iddia edə bilməz" in clinical,
+        repr(clinical),
+    )
+
+    audience = bot.answer_special_question(
+        "Siz ancaq uşaqlarla işləyirsiniz?", bare_age_lead
+    )
+    check(
+        "audience question answers the approved age range",
+        audience is not None and "12–18" in audience,
+        repr(audience),
+    )
+
+    check(
+        "chat preference accepts informal request",
+        bot.prefers_chat_only("Zəhmət olmasa buradan yazın da"),
+    )
+
+    vague_price = bot.answer_special_question("qiymət vəss", bare_age_lead)
+    check(
+        "informal vague price request gets safe price answer",
+        vague_price is not None and "vahid məbləğ" in vague_price,
+        repr(vague_price),
+    )
+
 
 def main():
 
