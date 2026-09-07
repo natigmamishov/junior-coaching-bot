@@ -4734,11 +4734,22 @@ def _process_legacy_turn(
 
     intent = data.get("intent")
     reply = None
+    active_age = get_active_child(lead).get("age")
+    age_not_eligible = (
+        field_before == "child_age"
+        and active_age is not None
+        and not 12 <= int(active_age) <= 18
+    )
 
     # -----------------------------------------------------
     # 3. Təhlükəsizlik / handoff / real complaint
     # -----------------------------------------------------
-    if self_contact_preference:
+    if age_not_eligible:
+        lead["status"] = "NOT_ELIGIBLE"
+        lead["application_status"] = "closed_not_eligible"
+        reply = "Xeyr, proqram 12–18 yaş aralığı üçündür."
+
+    elif self_contact_preference:
         reply = (
             "Başa düşdüm, geri zəng planlamırıq 😊 İstədiyiniz vaxt özünüz "
             "əlaqə saxlaya bilərsiniz. Burada da suallarınızı yaza bilərsiniz."
@@ -4896,14 +4907,10 @@ def _process_legacy_turn(
         if correction_ack:
             answer = correction_ack + "\n\n" + answer
 
-        # Flow yalnız analyzer bunun təbii olduğunu deyəndə qayıdır.
-        # Eyni mövzuda follow-up / israr varsa qayıtmır.
-        if data.get("resume_flow") and not data.get("topic_open"):
-            reply = append_next_question(
-                answer,
-                lead,
-                with_bridge=True,
-            )
+        # V1: istifadəçinin sualını əvvəl qısa cavablandır, sonra çatışmayan
+        # növbəti datanı topla. Klinik sərhəd mövzusunda funnel davam etmir.
+        if get_next_missing_field(lead) is not None and not clinical_boundary_question:
+            reply = append_next_question(answer, lead, with_bridge=False)
         else:
             reply = answer
 
@@ -5020,6 +5027,135 @@ def _process_legacy_turn(
 
     return reply
 
+
+
+# =========================================================
+# SIMPLIFIED V1 LEAD-CAPTURE POLICY
+# =========================================================
+
+SIMPLIFIED_UNKNOWN_FAQ = "Bu barədə ətraflı məlumatı məsul əməkdaşımız təqdim edəcək."
+
+
+def get_next_missing_field(lead: dict):
+    ensure_lead_structure(lead)
+    child = get_active_child(lead)
+    skipped = set(lead.get("_skipped_fields") or [])
+    age = child.get("age")
+    if age is not None and not 12 <= int(age) <= 18:
+        return None
+    for field, value in (
+        ("child_age", child.get("age")),
+        ("main_concern", child.get("main_concern")),
+        ("parent_name", lead.get("parent_name")),
+        ("phone", lead.get("phone")),
+        ("preferred_call_time", lead.get("preferred_call_time")),
+    ):
+        if field not in skipped and not value:
+            return field
+    return None
+
+
+def get_next_question(lead: dict) -> str:
+    field = get_next_missing_field(lead)
+    parent = get_parent_display_name(lead)
+    if field == "child_age":
+        return "İlk olaraq, övladınızın yaşını qeyd edə bilərsiniz?"
+    if field == "main_concern":
+        return ("Dəstək verilməsini istədiyiniz əsas məsələ nədir?\n\n"
+                "Məsələn: özünəinam, ünsiyyət və özünüifadə, məsuliyyət və intizam, "
+                "fokus, liderlik, gələcək və ixtisas seçimi və s.")
+    if field == "parent_name":
+        return "Qeyd etdim. Adınızı necə qeyd edə bilərəm?"
+    if field == "phone":
+        salutation = f", {parent} xanım/bəy" if parent else ""
+        return (f"Təşəkkür edirəm{salutation}. Sizinlə məlumat üçün əməkdaşımız əlaqə "
+                "saxlayacaq. Əlaqə nömrənizi qeyd edə bilərsiniz?\n\n"
+                "Zəng müddəti təxminən 10 dəqiqədir.")
+    if field == "preferred_call_time":
+        return ("Sizinlə əlaqə saxlamaq üçün hansı vaxt daha uyğundur?\n\n"
+                "10:00–13:00\n13:00–17:00\n17:00–20:00")
+    return ""
+
+
+def is_clinical_boundary_question(user_text: str) -> bool:
+    value = normalize_for_search(user_text)
+    return any(term in value for term in (
+        "panik atak", "panika atak", "panik tutma", "depressiya",
+        "autizm", "autistik", "dehb", "adhd", "psixoloji problem",
+        "psixoloji diaqnoz", "psixi problem",
+    ))
+
+
+def _approved_faq_answer(question: str) -> Optional[str]:
+    value = normalize_for_search(question)
+    if is_clinical_boundary_question(question):
+        return ("Junior Coaching panik atak, depressiya, autizm, DEHB və digər klinik "
+                "psixoloji mövzularla çalışmır. Bu halda uyğun ixtisaslı mütəxəssisə "
+                "müraciət etməyiniz daha doğrudur.")
+    if any(x in value for x in ("junior coaching nedir", "proqram nedir", "proqram haqqinda", "proqram barede")):
+        return "Junior Coaching 12–18 yaşlı yeniyetmələrin şəxsi və sosial bacarıqlarının inkişafına yönəlmiş proqramdır."
+    if any(x in value for x in ("hansi yas", "nece yas", "yas araligi", "12 den asagi", "12den asagi", "kicik yas", "asagi yas")):
+        if any(x in value for x in ("12 den asagi", "12den asagi", "kicik yas", "asagi yas")):
+            return "Xeyr, proqram 12 yaşdan aşağı uşaqlar üçün nəzərdə tutulmayıb."
+        return "Proqram 12–18 yaş aralığı üçündür."
+    if any(x in value for x in ("harada", "unvan", "mekan")):
+        return "Görüşlər ADAS Plaza-da, Süleyman Sani Axundov küçəsində keçirilir."
+    if any(x in value for x in ("qiymet", "odenis", "ne qederdir")):
+        return "Qiymət uyğun proqram və müddətə əsasən dəyişir; əməkdaşımız zəng zamanı məlumat verəcək."
+    if any(x in value for x in ("muddet", "ne qeder cekir", "nece ay")):
+        return "Müddəti əməkdaşımız zəng zamanı övladınızın ehtiyacına uyğun müəyyənləşdirib bildirəcək."
+    if any(x in value for x in ("ferdi", "qrup", "individual")):
+        return "Fərqli formatlar mövcuddur; uyğun formatı mütəxəssis dəqiqləşdirməyə kömək edəcək."
+    if any(x in value for x in ("gorus sayi", "nece gorus", "gorus muddet", "nece deqiqe")):
+        return "Görüş sayı və müddəti seçilən proqram və formata görə dəyişir; mütəxəssis dəqiq məlumat verəcək."
+    if any(x in value for x in ("hansi gun", "gunler", "bazar gunu", "qrafik")):
+        return "Qrup görüşləri əsasən bazar günləri keçirilir; dəqiq qrafik əvvəlcədən təqdim olunur."
+    if any(x in value for x in ("hansi dil", "azerbaycan dili", "rus dili", "ingilis dili")):
+        return "Görüşlər əsasən Azərbaycan dilindədir; digər dil ehtiyacı əməkdaşla dəqiqləşdirilir."
+    if any(x in value for x in ("iki usaq", "2 usaq", "iki ovlad", "2 ovlad")):
+        return "Hər iki övladın məlumatları ayrıca qeydə alınır və uyğunluğu ayrıca müəyyənləşdirilir."
+    if is_contact_method_question(question):
+        return "Əməkdaşımız qeyd etdiyiniz telefon nömrəsi ilə sizinlə əlaqə saxlayacaq."
+    if is_child_presence_question(question):
+        return "İlkin zəng valideynlə keçirilir və təxminən 10 dəqiqə davam edir."
+    return None
+
+
+def answer_special_question(user_text: str, lead: dict) -> Optional[str]:
+    return _approved_faq_answer(user_text)
+
+
+def generate_contextual_kb_answer(question: str, lead: dict,
+                                  history: Optional[List[Dict[str, str]]] = None,
+                                  faq_min_score: float = 0.18) -> str:
+    return _approved_faq_answer(question) or SIMPLIFIED_UNKNOWN_FAQ
+
+
+def should_finalize_lead(lead: dict) -> bool:
+    return bool(lead.get("phone") and lead.get("preferred_call_time")
+                and get_next_missing_field(lead) is None)
+
+
+def build_final_message(lead: dict) -> str:
+    return f"Təşəkkürlər. Sizinlə {lead.get('preferred_call_time')} aralığında əlaqə saxlanılacaq."
+
+
+def finalize_lead(lead: dict) -> str:
+    lead["status"] = "CALL_REQUESTED"
+    lead["lead_stage"] = "handoff"
+    lead["application_status"] = "completed"
+    lead["handoff_status"] = "requested"
+    lead["owner"] = "human"
+    action = {"type": "create_callback", "status": "pending",
+              "phone": lead.get("phone"),
+              "preferred_call_time": lead.get("preferred_call_time")}
+    actions = lead.setdefault("previous_actions", [])
+    if action not in actions:
+        actions.append(action)
+    pending = lead.setdefault("pending_actions", [])
+    if "create_callback" not in pending:
+        pending.append("create_callback")
+    return build_final_message(lead)
 
 _TURN_ORCHESTRATOR = TurnOrchestrator()
 

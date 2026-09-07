@@ -27,10 +27,9 @@ st.set_page_config(
 # =========================================================
 
 WELCOME_MESSAGE = (
-    "Salam, xoş gəlmisiniz 🙏 "
-    "Junior Coaching proqramına maraq göstərdiyiniz üçün "
-    "təşəkkür edirik. "
-    "Övladınızla bağlı sizi ən çox düşündürən məsələ nədir?"
+    "Salam,\n\n"
+    "Övladınıza uyğun proqramı öyrənmək üçün sizə 2 qısa sualımız var.\n\n"
+    "İlk olaraq, yaşını qeyd edə bilərsiniz?"
 )
 
 
