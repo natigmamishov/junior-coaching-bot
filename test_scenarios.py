@@ -1329,6 +1329,55 @@ def test_consultative_discovery_order():
         repr(vague_price),
     )
 
+    stop_lead = bot.create_empty_lead("TEST")
+    stop_lead["children"][0].update(age=14, main_concern="davamlılıq")
+    original_client = bot.client
+    try:
+        bot.client = None
+        stop_reply = bot.lead_agent_reply("kifayət", stop_lead, history=[])
+    finally:
+        bot.client = original_client
+    check(
+        "kifayət flow-u tam dayandırır",
+        stop_lead["status"] == "STOPPED"
+        and stop_lead["application_status"] == "stopped_by_user"
+        and bot.get_next_missing_field(stop_lead) is None
+        and stop_reply == "Əlbəttə. Təşəkkür edirik.",
+        f"lead={stop_lead!r} reply={stop_reply!r}",
+    )
+
+    phone_lead = bot.create_empty_lead("TEST")
+    phone_lead["children"][0].update(age=14, main_concern="davamlılıq")
+    phone_lead["parent_name"] = "Aysel"
+    original_client = bot.client
+    try:
+        bot.client = None
+        affirmative_reply = bot.lead_agent_reply("bəli", phone_lead, history=[])
+    finally:
+        bot.client = original_client
+    check(
+        "telefon mərhələsində bəli nömrədən imtina sayılmır",
+        not phone_lead["phone_declined"]
+        and bot.get_next_missing_field(phone_lead) == "phone"
+        and "tam formada" in affirmative_reply,
+        f"lead={phone_lead!r} reply={affirmative_reply!r}",
+    )
+    echo_text = (
+        "Junior Coaching panik atak, depressiya, autizm, DEHB və digər klinik "
+        "psixoloji mövzularla çalışmır."
+    )
+    echo_lead = bot.create_empty_lead("TEST")
+    echo_reply = bot.lead_agent_reply(
+        echo_text,
+        echo_lead,
+        history=[{"role": "assistant", "content": echo_text}],
+    )
+    check(
+        "istifadəçi son bot cavabını təkrarlayanda loop yaranmır",
+        echo_reply == "Anladım.",
+        repr(echo_reply),
+    )
+
     unknown = bot.generate_contextual_kb_answer("Nahar verilir?", lead)
     check(
         "FAQ-dan kənar sual standart əməkdaş cavabına gedir",

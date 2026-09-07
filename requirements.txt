@@ -18,7 +18,7 @@ pandas==2.2.2
 python-dotenv==1.0.1
 
 # Demo UI
-streamlit==1.32.0
+streamlit>=1.37,<2
 
 streamlit
 openai

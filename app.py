@@ -2,6 +2,7 @@ import hmac
 import os
 import uuid
 import sqlite3
+import time
 
 from pathlib import Path
 
@@ -66,6 +67,12 @@ if "conversation_finished" not in st.session_state:
 
 if "lead_saved" not in st.session_state:
     st.session_state.lead_saved = False
+
+if "need_batch_active" not in st.session_state:
+    st.session_state.need_batch_active = False
+
+if "need_batch_deadline" not in st.session_state:
+    st.session_state.need_batch_deadline = 0.0
 
 
 # =========================================================
@@ -260,6 +267,8 @@ def reset_chat():
     st.session_state.conversation_finished = False
 
     st.session_state.lead_saved = False
+    st.session_state.need_batch_active = False
+    st.session_state.need_batch_deadline = 0.0
 
 
 # =========================================================
@@ -634,6 +643,38 @@ for message in st.session_state.messages:
 
 
 # =========================================================
+# NEED MESSAGE DEBOUNCE
+# =========================================================
+
+@st.fragment(run_every=1)
+def flush_need_batch():
+    """After eight seconds, ask for the parent name exactly once."""
+    if not st.session_state.need_batch_active:
+        return
+    if time.time() < st.session_state.need_batch_deadline:
+        return
+
+    st.session_state.need_batch_active = False
+    if (
+        st.session_state.lead.get("status") != "STOPPED"
+        and bot.get_next_missing_field(st.session_state.lead) == "parent_name"
+    ):
+        prompt = bot.get_next_question(st.session_state.lead)
+        last = st.session_state.messages[-1] if st.session_state.messages else {}
+        if prompt and not (
+            last.get("role") == "assistant"
+            and last.get("content") == prompt
+        ):
+            st.session_state.messages.append(
+                {"role": "assistant", "content": prompt}
+            )
+    st.rerun()
+
+
+flush_need_batch()
+
+
+# =========================================================
 # CHAT INPUT
 # =========================================================
 
@@ -690,10 +731,33 @@ if True:  # A completed application does not close the conversation.
             # BOT RESPONSE
             # ---------------------------------------------
 
+            normalized_user = bot.normalize_for_search(user_text)
+            stop_words = {
+                "kifayet", "besdir", "dayandir", "dayanin", "stop",
+                "istemirem", "lazim deyil", "ehtiyac yoxdur",
+            }
+            add_to_need_batch = (
+                st.session_state.need_batch_active
+                and time.time() < st.session_state.need_batch_deadline
+                and current_field == "parent_name"
+                and normalized_user not in stop_words
+            )
+
             try:
 
-                bot_response = (
-                    bot.lead_agent_reply(
+                if add_to_need_batch:
+                    child = bot.get_active_child(st.session_state.lead)
+                    previous = str(child.get("main_concern") or "").strip()
+                    addition = user_text.strip()
+                    if addition and addition.lower() not in previous.lower():
+                        child["main_concern"] = (
+                            f"{previous}; {addition}" if previous else addition
+                        )
+                        bot.sync_flat_fields(st.session_state.lead)
+                    bot_response = "Əlavə məlumatı da qeyd etdim."
+                else:
+                    bot_response = (
+                        bot.lead_agent_reply(
                         user_text=user_text,
                         lead=st.session_state.lead,
                         faq_min_score=0.25,
@@ -702,9 +766,19 @@ if True:  # A completed application does not close the conversation.
                         ),
                         conversation_id=st.session_state.session_id,
                         channel_message_id=st.session_state.messages[-1]["message_id"],
-                        channel="streamlit",
+                            channel="streamlit",
+                        )
                     )
-                )
+
+                if (
+                    not add_to_need_batch
+                    and current_field == "main_concern"
+                    and bot.get_next_missing_field(st.session_state.lead) == "parent_name"
+                    and st.session_state.lead.get("status") != "STOPPED"
+                ):
+                    st.session_state.need_batch_active = True
+                    st.session_state.need_batch_deadline = time.time() + 8.0
+                    bot_response = "Anladım, qeyd etdim."
 
             except Exception as exc:
 
@@ -784,9 +858,11 @@ if True:  # A completed application does not close the conversation.
                 )
             ):
 
-                confirmation = persist_lead_once(
+                persist_lead_once(
                     st.session_state.lead
                 )
+                # Database identifier is internal and is not shown to the parent.
+                confirmation = None
 
 
                 if confirmation:

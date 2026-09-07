@@ -4484,6 +4484,33 @@ def _process_legacy_turn(
 
     corrected_age = explicit_age_correction(user_text)
     bare_ages = extract_all_ages(user_text)
+    normalized_turn = normalize_for_search(user_text)
+    stop_intent = (
+        normalized_turn in (
+            "kifayet", "besdir", "dayandir", "dayanin", "stop",
+            "istemirem", "lazim deyil", "ehtiyac yoxdur",
+        )
+        or any(x in normalized_turn for x in (
+            "davam etmek istemirem", "söhbeti dayandir", "sohbeti dayandir",
+            "prosesi dayandir", "artiq yazmayin",
+        ))
+    )
+    bare_parent_name = (
+        clean_name(user_text)
+        if field_before == "parent_name"
+        and len(user_text.split()) <= 2
+        and not user_text.endswith("?")
+        else None
+    )
+    affirmative_without_value = (
+        field_before in ("phone", "preferred_call_time")
+        and normalized_turn in ("beli", "he", "hee", "yes", "ok", "okay")
+    )
+    echoed_assistant_message = any(
+        item.get("role") == "assistant"
+        and normalize_for_search(item.get("content", "")) == normalized_turn
+        for item in (history or [])[-4:]
+    )
     bare_age_answer = (
         field_before == "child_age"
         and len(bare_ages) == 1
@@ -4500,7 +4527,48 @@ def _process_legacy_turn(
         "qiymet", "qiymet vess", "qiymet ve s", "qiymet vesaire"
     )
 
-    if corrected_age is not None:
+    if stop_intent:
+        data = {
+            "intent": "stop", "intents": ["stop"],
+            "corrections": [], "children": [], "questions": [],
+            "objections": [], "confidence": 1.0,
+            "clarification_needed": False, "clarification_question": "",
+            "ambiguity_present": False, "handoff_required": False,
+            "is_question": False, "resume_flow": False,
+            "topic_open": False, "ready_to_proceed": False,
+        }
+    elif echoed_assistant_message:
+        data = {
+            "intent": "assistant_echo", "intents": ["assistant_echo"],
+            "corrections": [], "children": [], "questions": [],
+            "objections": [], "confidence": 1.0,
+            "clarification_needed": False, "clarification_question": "",
+            "ambiguity_present": False, "handoff_required": False,
+            "is_question": False, "resume_flow": False,
+            "topic_open": False, "ready_to_proceed": False,
+        }
+    elif bare_parent_name:
+        data = {
+            "intent": "field_answer", "intents": ["field_answer"],
+            "parent_name": bare_parent_name,
+            "corrections": [], "children": [], "questions": [],
+            "objections": [], "confidence": 1.0,
+            "clarification_needed": False, "clarification_question": "",
+            "ambiguity_present": False, "handoff_required": False,
+            "is_question": False, "resume_flow": False,
+            "topic_open": False, "ready_to_proceed": False,
+        }
+    elif affirmative_without_value:
+        data = {
+            "intent": "field_answer", "intents": ["field_answer"],
+            "corrections": [], "children": [], "questions": [],
+            "objections": [], "confidence": 1.0,
+            "clarification_needed": False, "clarification_question": "",
+            "ambiguity_present": False, "handoff_required": False,
+            "is_question": False, "resume_flow": False,
+            "topic_open": False, "ready_to_proceed": False,
+        }
+    elif corrected_age is not None:
         data = {
             "intent": "correction",
             "intents": ["correction"],
@@ -4744,7 +4812,18 @@ def _process_legacy_turn(
     # -----------------------------------------------------
     # 3. Təhlükəsizlik / handoff / real complaint
     # -----------------------------------------------------
-    if age_not_eligible:
+    if intent == "stop":
+        lead["status"] = "STOPPED"
+        lead["application_status"] = "stopped_by_user"
+        lead["pending_questions"] = []
+        lead["_last_asked_field"] = None
+        lead["_ask_repeat_count"] = 0
+        reply = "Əlbəttə. Təşəkkür edirik."
+
+    elif intent == "assistant_echo":
+        reply = "Anladım."
+
+    elif age_not_eligible:
         lead["status"] = "NOT_ELIGIBLE"
         lead["application_status"] = "closed_not_eligible"
         reply = "Xeyr, proqram 12–18 yaş aralığı üçündür."
@@ -4955,16 +5034,14 @@ def _process_legacy_turn(
             and intent in ("field_answer", "correction")
             and not data.get("questions")
         ):
-            continue_without_phone(lead)
             digits = re.sub(r"\D", "", user_text)
             if digits:
                 reply = (
-                    "Bu nömrə tam görünmür, ona görə qeyd etmədim. "
-                    "Problem deyil — buradan davam edə bilərik; "
-                    "istəsəniz düzgün nömrəni sonra yazarsınız."
+                    "Bu nömrə düzgün görünmür. Zəhmət olmasa, əlaqə nömrəsini "
+                    "tam formada qeyd edin."
                 )
             else:
-                reply = "Başa düşdüm. Nömrəsiz buradan davam edə bilərik 😊"
+                reply = "Əlaqə nömrənizi tam formada qeyd edə bilərsiniz?"
 
         if reply is not None:
             pass
@@ -5018,6 +5095,15 @@ def _process_legacy_turn(
     # -----------------------------------------------------
     reply = apply_orchestration_guard(reply, lead, data)
 
+    # Emoji yalnız istifadəçi özü emoji işlədibsə cavabda qala bilər.
+    user_used_emoji = bool(re.search(
+        r"[\U0001F300-\U0001FAFF\u2600-\u27BF]",
+        user_text,
+    ))
+    if not user_used_emoji:
+        reply = re.sub(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", "", reply)
+        reply = re.sub(r" {2,}", " ", reply).strip()
+
     # -----------------------------------------------------
     # 14. Tarixçə
     # -----------------------------------------------------
@@ -5038,6 +5124,8 @@ SIMPLIFIED_UNKNOWN_FAQ = "Bu barədə ətraflı məlumatı məsul əməkdaşım�
 
 def get_next_missing_field(lead: dict):
     ensure_lead_structure(lead)
+    if lead.get("status") == "STOPPED":
+        return None
     child = get_active_child(lead)
     skipped = set(lead.get("_skipped_fields") or [])
     age = child.get("age")
@@ -5065,9 +5153,10 @@ def get_next_question(lead: dict) -> str:
                 "Məsələn: özünəinam, ünsiyyət və özünüifadə, məsuliyyət və intizam, "
                 "fokus, liderlik, gələcək və ixtisas seçimi və s.")
     if field == "parent_name":
-        return "Qeyd etdim. Adınızı necə qeyd edə bilərəm?"
+        return "Adınızı necə qeyd edə bilərəm?"
     if field == "phone":
-        salutation = f", {parent} xanım/bəy" if parent else ""
+        title = lead.get("parent_title") or ""
+        salutation = f", {parent}{(' ' + title) if title else ''}" if parent else ""
         return (f"Təşəkkür edirəm{salutation}. Sizinlə məlumat üçün əməkdaşımız əlaqə "
                 "saxlayacaq. Əlaqə nömrənizi qeyd edə bilərsiniz?\n\n"
                 "Zəng müddəti təxminən 10 dəqiqədir.")
