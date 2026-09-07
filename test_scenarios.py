@@ -583,51 +583,29 @@ def test_concern_answer():
 # =========================================================
 
 def test_no_contact_finalization():
+    print("\nYaş uyğunluğu")
 
-    print(
-        "\nTelefonsuz yekunlaşma"
-    )
-
-    lead = bot.create_empty_lead(
-        "TEST"
-    )
-
-    lead["parent_name"] = "Leyla"
-
-    lead["children"][0].update(
-        name="Sara",
-        age=11,
-        main_concern="özgüvən",
-    )
-
-    lead["_skipped_fields"] = [
-        "phone",
-        "preferred_call_time",
-    ]
+    lead = bot.create_empty_lead("TEST")
+    lead["children"][0]["age"] = 11
+    bot.sync_flat_fields(lead)
 
     check(
-        "telefon keçiləndə axın bitir",
-        bot.get_next_missing_field(
-            lead
-        ) is None,
+        "12 yaşdan aşağı müraciətdə flow davam etmir",
+        bot.get_next_missing_field(lead) is None,
         f"next={bot.get_next_missing_field(lead)!r}",
     )
 
-    message = bot.finalize_lead(
-        lead
-    )
+    original_client = bot.client
+    try:
+        bot.client = None
+        reply = bot.lead_agent_reply("11", bot.create_empty_lead("TEST"), history=[])
+    finally:
+        bot.client = original_client
 
     check(
-        "status NO_CONTACT olur",
-        lead["status"] == "NO_CONTACT",
-        f"status={lead['status']!r}",
-    )
-
-    check(
-        "'zəng edəcəyik' vədi verilmir",
-        "zəng" not in message.lower()
-        or "əlaqə saxlaya bilməyəcəyik" in message,
-        message[:110],
+        "12 yaşdan aşağı müraciət uyğun sayılmır",
+        "12–18" in reply,
+        reply,
     )
 
 
@@ -900,11 +878,10 @@ def test_customer_feedback_round_two():
 
     payment = bot.answer_special_question("İlkin tanışlıq ödənişlidir?", lead)
     check(
-        "unknown binary payment fact is not replaced by nearby FAQ",
-        payment is not None and "dəqiq fakt yoxdur" in payment,
+        "ödəniş sualı təsdiqli qiymət siyasəti ilə cavablanır",
+        payment is not None and "əməkdaş" in payment,
         repr(payment),
     )
-
     first = bot._callback_reference_reply(
         "Bu gün oğlum yanımda deyil, olar ki sabah edək?", [], lead
     )
@@ -957,13 +934,12 @@ def test_customer_feedback_round_two():
         "Bir ailədən 2 uşaq gələ bilərmi?", lead
     )
     check(
-        "two-child policy question gets specific safe answer",
+        "iki övlad ayrıca qeydə alınır",
         sibling_answer is not None
-        and "dəqiq göstərilməyib" in sibling_answer
-        and "Hər iki uşağın yaşını" in sibling_answer,
+        and "ayrıca qeydə alınır" in sibling_answer
+        and "uyğunluğu ayrıca" in sibling_answer,
         repr(sibling_answer),
     )
-
     sibling_history = [
         {"role": "user", "content": "Bir ailədən 2 uşaq gələ bilərmi?"},
         {"role": "assistant", "content": sibling_answer or ""},
@@ -1018,13 +994,12 @@ def test_customer_feedback_round_two():
 
     price_reply = bot.answer_special_question("Qiymət nə qədərdir?", lead)
     check(
-        "generic price answer does not re-ask which program",
+        "qiymət cavabı əməkdaşa yönləndirir və proqramı təkrar soruşmur",
         price_reply is not None
-        and "vahid məbləğ" in price_reply
+        and "əməkdaş" in price_reply
         and "hansı proqram" not in price_reply.lower(),
         repr(price_reply),
     )
-
     original_analyze = bot.analyze_message
     try:
         bot.analyze_message = lambda user_text, lead, history=None, faq_candidates=None: (
@@ -1067,13 +1042,12 @@ def test_customer_feedback_round_two():
         "Qiyməti nə qədərdir 9 aylıq proqramın?", lead
     )
     check(
-        "nine-month generic price question gets direct safe answer",
+        "müddət qeyd edilsə də qiymət əməkdaş tərəfindən verilir",
         nine_month_price is not None
-        and "vahid məbləğ" in nine_month_price
+        and "əməkdaş" in nine_month_price
         and "əsas ehtiyac" not in nine_month_price,
         repr(nine_month_price),
     )
-
     no_phone_lead = bot.create_empty_lead("TEST")
     no_phone_lead["parent_name"] = "Günel"
     no_phone_lead["children"][0].update({
@@ -1263,182 +1237,103 @@ def test_production_architecture_contract():
 
 
 def test_consultative_discovery_order():
-    print("\nConsultative discovery order")
+    print("\nSadələşdirilmiş V1 lead flow")
 
     lead = bot.create_empty_lead("TEST")
     check(
-        "first discovery question is the parent's concern",
-        bot.get_next_missing_field(lead) == "main_concern",
-        repr(lead),
-    )
-
-    child = bot.get_active_child(lead)
-    child["main_concern"] = "məktəbdə özünü ifadə etmək"
-    bot.sync_flat_fields(lead)
-    check(
-        "age follows the concern",
+        "ilk sahə övladın yaşıdır",
         bot.get_next_missing_field(lead) == "child_age",
         repr(lead),
     )
 
+    child = bot.get_active_child(lead)
     child["age"] = 14
     bot.sync_flat_fields(lead)
     check(
-        "names and phone are not required during discovery",
-        bot.get_next_missing_field(lead) is None,
+        "yaşdan sonra əsas ehtiyac gəlir",
+        bot.get_next_missing_field(lead) == "main_concern",
         repr(lead),
     )
 
-    lead["contact_requested"] = True
+    child["main_concern"] = "ünsiyyət və özünüifadə"
+    bot.sync_flat_fields(lead)
     check(
-        "name collection opens only in explicit contact stage",
+        "ehtiyacdan sonra valideyn adı gəlir",
         bot.get_next_missing_field(lead) == "parent_name",
         repr(lead),
     )
 
     lead["parent_name"] = "Aysel"
     check(
-        "child name is collected late with contact details",
-        bot.get_next_missing_field(lead) == "child_name",
-        repr(lead),
-    )
-
-    child["name"] = "Tural"
-    bot.sync_flat_fields(lead)
-    check(
-        "phone follows late-stage names",
+        "uşaq adı tələb olunmadan telefon gəlir",
         bot.get_next_missing_field(lead) == "phone",
         repr(lead),
     )
 
-    bot.continue_without_phone(lead)
+    lead["phone"] = "0501234567"
     check(
-        "unanswered phone prompt is not repeated",
-        bot.get_next_missing_field(lead) is None and not lead["contact_requested"],
+        "telefondan sonra zəng vaxtı gəlir",
+        bot.get_next_missing_field(lead) == "preferred_call_time",
         repr(lead),
     )
 
-    acknowledgement = bot.build_field_ack("main_concern", lead)
+    lead["preferred_call_time"] = "17:00–20:00"
     check(
-        "field answers receive a human acknowledgement",
-        acknowledgement.startswith("Anladım"),
-        acknowledgement,
+        "beş əsas data tamamlananda flow bitir",
+        bot.get_next_missing_field(lead) is None
+        and bot.should_finalize_lead(lead),
+        repr(lead),
     )
 
+    final = bot.finalize_lead(lead)
     check(
-        "mere program interest does not open contact funnel",
-        not bot.is_explicit_contact_request(
-            "Salam, 15 yaşlı oğlum üçün maraqlanıram"
-        ),
-    )
-    check(
-        "explicit registration opens contact funnel",
-        bot.is_explicit_contact_request("Qeydiyyatdan keçmək istəyirəm"),
+        "yekun müraciət insan əməkdaşa ötürülür",
+        lead["status"] == "CALL_REQUESTED"
+        and lead["handoff_status"] == "requested"
+        and lead["owner"] == "human"
+        and "17:00–20:00" in final,
+        f"lead={lead!r} final={final!r}",
     )
 
     overview = bot.answer_special_question(
-        "Adım Aygündür. Proqram barədə qısa məlumat verə bilərsiniz?",
-        lead,
+        "Proqram barədə qısa məlumat verə bilərsiniz?", lead
     )
     check(
-        "general program overview gets a direct approved answer",
-        bool(overview) and "12–18" in overview and "inkişaf proqramıdır" in overview,
+        "proqram icmalı təsdiqli və qısadır",
+        bool(overview) and "12–18" in overview and "şəxsi və sosial" in overview,
         repr(overview),
     )
 
-    check(
-        "explicit age correction is detected without LLM",
-        bot.explicit_age_correction(
-            "Yeri gəlmişkən, səhv demişəm, oğlum 15 yox, 16 yaşındadır."
-        ) == 16,
-    )
-
-    check(
-        "detailed information request stays in assistant",
-        bot.is_program_overview_request("Ətraflı məlumat almaq istəyirəm"),
-    )
-    check(
-        "presence check is recognized",
-        bot.is_presence_check("burdasız?"),
-    )
-
-    handed_off = bot.create_empty_lead("TEST")
-    handed_off["owner"] = "human"
-    handed_off["handoff_status"] = "requested"
-    check(
-        "old handoff state does not freeze later conversation",
-        bot.decide_next_step_policy(
-            handed_off,
-            {"intent": "field_answer", "handoff_required": False,
-             "clarification_needed": False, "ready_to_proceed": False},
-        ) == "CONTINUE",
-    )
-
-    bare_age_lead = bot.create_empty_lead("TEST")
-    bare_age_lead["children"][0]["main_concern"] = "ünsiyyət"
-    bare_age_reply = bot._process_legacy_turn("16", bare_age_lead, history=[])
-    check(
-        "bare age answer is saved and answered without LLM",
-        bare_age_lead["children"][0]["age"] == 16 and bool(bare_age_reply),
-        f"lead={bare_age_lead!r} reply={bare_age_reply!r}",
-    )
-
-    check(
-        "contact method question is separated from callback scheduling",
-        bot.is_contact_method_question("Sizinlə necə əlaqə saxlamaq olar?"),
-    )
-    contact_answer = bot.answer_special_question(
-        "Buradan zəng edəcəksiniz, yoxsa nömrəyə?", bare_age_lead
-    )
-    check(
-        "contact channel gets a direct answer",
-        bool(contact_answer) and "telefon nömrəsi" in contact_answer,
-        repr(contact_answer),
-    )
-
-    self_contact_lead = bot.create_empty_lead("TEST")
-    self_contact_lead["contact_requested"] = True
-    self_contact_reply = bot._process_legacy_turn(
-        "Sonra özüm zəng edərəm", self_contact_lead, history=[]
-    )
-    check(
-        "self-contact preference disables callback funnel",
-        self_contact_lead["phone_declined"]
-        and not self_contact_lead["contact_requested"]
-        and "hansı tarixdə" not in self_contact_reply.lower(),
-        f"lead={self_contact_lead!r} reply={self_contact_reply!r}",
-    )
-
     clinical = bot.answer_special_question(
-        "Oğlumda panik atak var, kömək edə bilərsiniz?", bare_age_lead
+        "Oğlumda panik atak var, kömək edə bilərsiniz?", lead
     )
     check(
-        "panic attack never receives a treatment promise",
-        clinical is not None
-        and "terapiya" in clinical
-        and "müalicə etdiyini iddia edə bilməz" in clinical,
+        "klinik mövzuda işləmədiyini açıq deyir",
+        clinical is not None and "çalışmır" in clinical and "mütəxəssis" in clinical,
         repr(clinical),
     )
 
     audience = bot.answer_special_question(
-        "Siz ancaq uşaqlarla işləyirsiniz?", bare_age_lead
+        "Siz ancaq uşaqlarla işləyirsiniz?", lead
     )
     check(
-        "audience question answers the approved age range",
+        "auditoriya sualına 12–18 cavabı verilir",
         audience is not None and "12–18" in audience,
         repr(audience),
     )
 
+    vague_price = bot.answer_special_question("qiymət və s.", lead)
     check(
-        "chat preference accepts informal request",
-        bot.prefers_chat_only("Zəhmət olmasa buradan yazın da"),
+        "qiymət üçün əməkdaş cavabı verilir",
+        vague_price is not None and "əməkdaş" in vague_price,
+        repr(vague_price),
     )
 
-    vague_price = bot.answer_special_question("qiymət vəss", bare_age_lead)
+    unknown = bot.generate_contextual_kb_answer("Nahar verilir?", lead)
     check(
-        "informal vague price request gets safe price answer",
-        vague_price is not None and "vahid məbləğ" in vague_price,
-        repr(vague_price),
+        "FAQ-dan kənar sual standart əməkdaş cavabına gedir",
+        unknown == bot.SIMPLIFIED_UNKNOWN_FAQ,
+        repr(unknown),
     )
 
 

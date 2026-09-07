@@ -5092,6 +5092,8 @@ def _approved_faq_answer(question: str) -> Optional[str]:
         return ("Junior Coaching panik atak, depressiya, autizm, DEHB və digər klinik "
                 "psixoloji mövzularla çalışmır. Bu halda uyğun ixtisaslı mütəxəssisə "
                 "müraciət etməyiniz daha doğrudur.")
+    if is_audience_question(question):
+        return "Proqram 12–18 yaş aralığı üçündür."
     if any(x in value for x in ("junior coaching nedir", "proqram nedir", "proqram haqqinda", "proqram barede")):
         return "Junior Coaching 12–18 yaşlı yeniyetmələrin şəxsi və sosial bacarıqlarının inkişafına yönəlmiş proqramdır."
     if any(x in value for x in ("hansi yas", "nece yas", "yas araligi", "12 den asagi", "12den asagi", "kicik yas", "asagi yas")):
