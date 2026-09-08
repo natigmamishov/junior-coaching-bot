@@ -742,6 +742,12 @@ if True:  # A completed application does not close the conversation.
                 and current_field == "parent_name"
                 and normalized_user not in stop_words
             )
+            plain_need_input = (
+                current_field == "main_concern"
+                and normalized_user not in stop_words
+                and not user_text.rstrip().endswith("?")
+                and not bot.is_clinical_boundary_question(user_text)
+            )
 
             try:
 
@@ -754,7 +760,21 @@ if True:  # A completed application does not close the conversation.
                             f"{previous}; {addition}" if previous else addition
                         )
                         bot.sync_flat_fields(st.session_state.lead)
+                    # Pəncərə ilk mesajdan yox, son ehtiyac mesajından sonra
+                    # səkkiz saniyə sakitlik keçəndə bağlanır.
+                    st.session_state.need_batch_deadline = time.time() + 8.0
                     bot_response = "Əlavə məlumatı da qeyd etdim."
+                elif plain_need_input:
+                    # Sadə ehtiyac cavabını LLM gözləmədən dərhal state-ə yaz.
+                    # Beləliklə paralel rerun yaranmadan debounce aktivləşir.
+                    bot.save_current_field_fallback(
+                        lead=st.session_state.lead,
+                        field="main_concern",
+                        user_text=user_text,
+                    )
+                    st.session_state.need_batch_active = True
+                    st.session_state.need_batch_deadline = time.time() + 8.0
+                    bot_response = "Anladım, qeyd etdim."
                 else:
                     bot_response = (
                         bot.lead_agent_reply(

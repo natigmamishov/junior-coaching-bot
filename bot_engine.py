@@ -4007,8 +4007,9 @@ def build_field_ack(field: Optional[str], lead: dict) -> str:
     if field == "child_name":
         return "Təşəkkür edirəm, adını qeyd etdim."
     if field == "parent_name":
-        parent = get_parent_display_name(lead)
-        return f"Məmnun oldum, {parent}." if parent else "Təşəkkür edirəm, qeyd etdim."
+        # Telefon sualının özündə ada uyğun təşəkkür var; ayrıca prefix
+        # eyni reaksiyanı iki dəfə təkrarlayırdı.
+        return ""
     if field == "preferred_call_time":
         return "Uyğundur, qeyd etdim."
     return ""
@@ -4503,18 +4504,40 @@ def _process_legacy_turn(
         else None
     )
     affirmative_without_value = (
-        field_before in ("phone", "preferred_call_time")
-        and normalized_turn in ("beli", "he", "hee", "yes", "ok", "okay")
+        (
+            field_before in ("phone", "preferred_call_time")
+            and normalized_turn in (
+                "beli", "he", "hee", "yes", "ok", "okay", "olar",
+                "buyurun", "elbet", "elbette", "elbetde",
+            )
+        )
+        or (
+            field_before == "phone"
+            and any(phrase in normalized_turn for phrase in (
+                "qeyd edirem", "indi qeyd edirem", "nomreni qeyd edirem",
+                "nomremi qeyd edirem", "zengle danisa bilerem",
+                "zeng ede bilersiniz", "elaqe saxlaya bilersiniz",
+            ))
+        )
     )
     echoed_assistant_message = any(
         item.get("role") == "assistant"
         and normalize_for_search(item.get("content", "")) == normalized_turn
         for item in (history or [])[-4:]
     )
+    # Yaş sualına valideyn çox vaxt təkcə "15" yox, "salam 15" kimi
+    # qısa cavab verir. Bu sadə cavabı LLM çağırmadan emal edirik.
+    age_answer_remainder = normalize_for_search(
+        re.sub(r"\b\d{1,2}\b", " ", user_text)
+    )
     bare_age_answer = (
         field_before == "child_age"
         and len(bare_ages) == 1
-        and normalize_for_search(user_text) == str(bare_ages[0])
+        and not user_text.rstrip().endswith("?")
+        and age_answer_remainder in (
+            "", "salam", "salamlar", "hello", "hi",
+            "salam necesiz", "salam yaxsisiz",
+        )
     )
     overview_request = is_program_overview_request(user_text)
     presence_check = is_presence_check(user_text)
