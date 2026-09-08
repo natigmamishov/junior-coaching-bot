@@ -824,7 +824,7 @@ def test_core_engine_contract():
 
     lead.update({
         "parent_name": "Aynur", "phone": "0501234567",
-        "preferred_call_time": "sabah 15:00",
+        "preferred_call_time": "13:00–17:00",
     })
     lead["children"] = [{
         "name": "Murad", "age": 15, "main_concern": "məktəbdə danışmır",

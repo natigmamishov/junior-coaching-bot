@@ -2591,7 +2591,6 @@ def merge_extracted_information(
 
     return corrected
 
-
 # =========================================================
 # 12. NEXT MISSING FIELD
 # =========================================================
@@ -4262,7 +4261,10 @@ def _callback_reference_reply(
             previous_user = normalize_for_search(message.get("content", ""))
             break
 
-    explicit_call = any(x in value for x in ("zeng", "telefon danisig"))
+    explicit_call = any(x in value for x in (
+        "zeng", "telefon danisig", "danisa bilmirem", "danisa bilerem",
+        "danisaq", "danismaq",
+    ))
     correction_reference = any(x in value for x in ("nezerde tut", "onu deyirdim", "onu demek"))
     scheduling = any(x in value for x in ("sabah", "bu gun", "edek", "kecirek", "uygundur"))
     child_absent = any(x in value for x in ("yanimda deyil", "usaq yanimda deyil", "oglum yanimda deyil"))
@@ -4275,10 +4277,18 @@ def _callback_reference_reply(
     combined = value + " " + previous_user
     proposed = "sabah" if "sabah" in combined else "bu gün" if "bu gun" in combined else ""
     if proposed:
+        # Təkcə gün adı saat intervalı deyil. Günü ayrıca saxlayırıq ki,
+        # required callback intervalı səhvən tamamlanmış sayılmasın.
+        lead["_callback_day"] = proposed
         lead["preferred_call_time"] = proposed
+        if not lead.get("phone"):
+            return (
+                f"Əlbəttə, {proposed} danışa bilərik. "
+                "Əlaqə nömrənizi qeyd edə bilərsiniz?"
+            )
         return (
-            "Əlbəttə 😊 Övladınızın ilkin zəngdə iştirakı vacib deyil, amma "
-            f"{proposed} sizə daha uyğundursa qeyd edə bilərik. Hansı saat aralığı rahatdır?"
+            f"Əlbəttə, {proposed} danışa bilərik. "
+            "Hansı saat aralığı rahatdır: 10:00–13:00, 13:00–17:00, yoxsa 17:00–20:00?"
         )
     return "Zəng vaxtını dəyişmək istəyirsiniz, düzdür? Hansı gün və saat aralığı rahatdır?"
 
@@ -5154,12 +5164,19 @@ def get_next_missing_field(lead: dict):
     age = child.get("age")
     if age is not None and not 12 <= int(age) <= 18:
         return None
+    callback_value = str(lead.get("preferred_call_time") or "")
+    callback_slot_complete = bool(
+        re.search(r"(?:10:00\D*13:00|13:00\D*17:00|17:00\D*20:00)", callback_value)
+    )
     for field, value in (
         ("child_age", child.get("age")),
         ("main_concern", child.get("main_concern")),
         ("parent_name", lead.get("parent_name")),
         ("phone", lead.get("phone")),
-        ("preferred_call_time", lead.get("preferred_call_time")),
+        (
+            "preferred_call_time",
+            lead.get("preferred_call_time") if callback_slot_complete else None,
+        ),
     ):
         if field not in skipped and not value:
             return field
@@ -5178,8 +5195,9 @@ def get_next_question(lead: dict) -> str:
     if field == "parent_name":
         return "Adınızı necə qeyd edə bilərəm?"
     if field == "phone":
-        title = lead.get("parent_title") or ""
-        salutation = f", {parent}{(' ' + title) if title else ''}" if parent else ""
+        # get_parent_display_name artıq titulu əlavə edir; burada ikinci dəfə
+        # əlavə etmək "Tural bəy bəy" nəticəsi yaradırdı.
+        salutation = f", {parent}" if parent else ""
         return (f"Təşəkkür edirəm{salutation}. Sizinlə məlumat üçün əməkdaşımız əlaqə "
                 "saxlayacaq. Əlaqə nömrənizi qeyd edə bilərsiniz?\n\n"
                 "Zəng müddəti təxminən 10 dəqiqədir.")
