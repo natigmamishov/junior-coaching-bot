@@ -2487,6 +2487,15 @@ def merge_extracted_information(
     ages = extract_all_ages(
         user_text
     )
+    count_match = re.search(
+        r"(?<![0-9])([0-9]+)[ ]*(?:usaq|uşaq|ovlad|övlad)",
+        user_text,
+        re.IGNORECASE,
+    )
+    if count_match and len(ages) > 1:
+        stated_count = int(count_match.group(1))
+        if stated_count in ages:
+            ages.remove(stated_count)
 
     if (
         len(ages) >= 2
@@ -4537,17 +4546,19 @@ def _process_legacy_turn(
     )
     # Yaş sualına valideyn çox vaxt təkcə "15" yox, "salam 15" kimi
     # qısa cavab verir. Bu sadə cavabı LLM çağırmadan emal edirik.
-    age_answer_remainder = normalize_for_search(
-        re.sub(r"\b\d{1,2}\b", " ", user_text)
+    direct_ages = list(bare_ages)
+    child_count_match = re.search(
+        r"(?<![0-9])([0-9]+)[ ]*(?:usaq|uşaq|ovlad|övlad)", user_text, re.IGNORECASE
     )
+    if child_count_match and len(direct_ages) > 1:
+        child_count = int(child_count_match.group(1))
+        if child_count in direct_ages:
+            direct_ages.remove(child_count)
     bare_age_answer = (
         field_before == "child_age"
-        and len(bare_ages) == 1
+        and 1 <= len(direct_ages) <= 2
+        and all(1 <= int(age) <= 18 for age in direct_ages)
         and not user_text.rstrip().endswith("?")
-        and age_answer_remainder in (
-            "", "salam", "salamlar", "hello", "hi",
-            "salam necesiz", "salam yaxsisiz",
-        )
     )
     overview_request = is_program_overview_request(user_text)
     presence_check = is_presence_check(user_text)
@@ -4627,8 +4638,11 @@ def _process_legacy_turn(
             "intents": ["field_answer"],
             "corrections": [],
             "children": [
-                {"name": "", "age": bare_ages[0], "main_concern": ""}
+                {"name": "", "age": age, "main_concern": ""}
+                for age in direct_ages
             ],
+            "multiple_children": len(direct_ages) > 1,
+            "children_count": len(direct_ages),
             "questions": [],
             "objections": [],
             "confidence": 1.0,

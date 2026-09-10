@@ -659,7 +659,8 @@ def flush_need_batch():
         st.session_state.lead.get("status") != "STOPPED"
         and bot.get_next_missing_field(st.session_state.lead) == "parent_name"
     ):
-        prompt = bot.get_next_question(st.session_state.lead)
+        question = bot.get_next_question(st.session_state.lead)
+        prompt = f"Anladım, qeyd etdim.\n\n{question}" if question else ""
         last = st.session_state.messages[-1] if st.session_state.messages else {}
         if prompt and not (
             last.get("role") == "assistant"
@@ -749,6 +750,7 @@ if True:  # A completed application does not close the conversation.
                 and not bot.is_clinical_boundary_question(user_text)
             )
 
+            defer_response = False
             try:
 
                 if add_to_need_batch:
@@ -763,7 +765,8 @@ if True:  # A completed application does not close the conversation.
                     # Pəncərə ilk mesajdan yox, son ehtiyac mesajından sonra
                     # səkkiz saniyə sakitlik keçəndə bağlanır.
                     st.session_state.need_batch_deadline = time.time() + 8.0
-                    bot_response = "Əlavə məlumatı da qeyd etdim."
+                    bot_response = ""
+                    defer_response = True
                 elif plain_need_input:
                     # Sadə ehtiyac cavabını LLM gözləmədən dərhal state-ə yaz.
                     # Beləliklə paralel rerun yaranmadan debounce aktivləşir.
@@ -774,7 +777,8 @@ if True:  # A completed application does not close the conversation.
                     )
                     st.session_state.need_batch_active = True
                     st.session_state.need_batch_deadline = time.time() + 8.0
-                    bot_response = "Anladım, qeyd etdim."
+                    bot_response = ""
+                    defer_response = True
                 else:
                     bot_response = (
                         bot.lead_agent_reply(
@@ -798,10 +802,12 @@ if True:  # A completed application does not close the conversation.
                 ):
                     st.session_state.need_batch_active = True
                     st.session_state.need_batch_deadline = time.time() + 8.0
-                    bot_response = "Anladım, qeyd etdim."
+                    bot_response = ""
+                    defer_response = True
 
             except Exception as exc:
 
+                defer_response = False
                 bot_response = (
                     "Hazırda texniki problem yarandı. "
                     "Zəhmət olmasa bir qədər sonra "
@@ -820,7 +826,8 @@ if True:  # A completed application does not close the conversation.
 
             try:
 
-                bot.save_conversation_log(
+                if not defer_response:
+                    bot.save_conversation_log(
                     session_id=(
                         st.session_state.session_id
                     ),
@@ -842,21 +849,20 @@ if True:  # A completed application does not close the conversation.
             # SHOW BOT RESPONSE
             # ---------------------------------------------
 
-            st.session_state.messages.append(
-                {
-                    "role": "assistant",
-                    "content": bot_response,
-                }
-            )
-
-
-            with st.chat_message(
-                "assistant"
-            ):
-
-                st.markdown(
-                    bot_response
+            if not defer_response:
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": bot_response,
+                    }
                 )
+
+                with st.chat_message(
+                    "assistant"
+                ):
+                    st.markdown(
+                        bot_response
+                    )
 
 
             # ---------------------------------------------
