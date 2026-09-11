@@ -820,6 +820,12 @@ if True:  # A completed application does not close the conversation.
                 )
 
 
+            # Adi cavablar istifadəçiyə daha təbii görünməsi üçün
+            # göstərilməzdən əvvəl qısa fasilə edilir. Ehtiyac batch-i
+            # ayrıca 8 saniyəlik debounce ilə idarə olunur.
+            if not defer_response:
+                time.sleep(2.0)
+
             # ---------------------------------------------
             # SAVE CONVERSATION LOG
             # ---------------------------------------------

@@ -2582,17 +2582,12 @@ def merge_extracted_information(
             "",
         )
     ).strip()
+    callback_slot = normalize_callback_slot(call_time or user_text)
 
-    if (
-        call_time
-        and not lead.get(
-            "preferred_call_time"
-        )
-    ):
-
-        lead[
-            "preferred_call_time"
-        ] = call_time
+    if callback_slot:
+        lead["preferred_call_time"] = callback_slot
+        if "sabah" in normalize_for_search(call_time + " " + user_text):
+            lead["_callback_day"] = "sabah"
 
     sync_flat_fields(
         lead
@@ -3145,9 +3140,11 @@ def save_current_field_fallback(
         if normalized in NON_ANSWER_TOKENS:
             return
 
-        lead[
-            "preferred_call_time"
-        ] = value
+        slot = normalize_callback_slot(value)
+        if slot:
+            lead["preferred_call_time"] = slot
+            if "sabah" in normalized:
+                lead["_callback_day"] = "sabah"
 
     sync_flat_fields(
         lead
@@ -5169,6 +5166,39 @@ def _process_legacy_turn(
 SIMPLIFIED_UNKNOWN_FAQ = "Bu barədə ətraflı məlumatı məsul əməkdaşımız təqdim edəcək."
 
 
+def normalize_callback_slot(value: str) -> Optional[str]:
+    """Map a concrete hour to one of the three approved callback windows."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    normalized = normalize_for_search(text)
+    canonical_slots = (
+        ("10:00–13:00", r"10:00\D*13:00"),
+        ("13:00–17:00", r"13:00\D*17:00"),
+        ("17:00–20:00", r"17:00\D*20:00"),
+    )
+    for slot, pattern in canonical_slots:
+        if re.search(pattern, text):
+            return slot
+
+    hour_match = re.search(
+        r"(?:saat\s*)?(?<!\d)(\d{1,2})(?::([0-5]\d))?(?!\d)",
+        normalized,
+    )
+    if not hour_match:
+        return None
+
+    hour = int(hour_match.group(1))
+    if 10 <= hour < 13:
+        return "10:00–13:00"
+    if 13 <= hour < 17:
+        return "13:00–17:00"
+    if 17 <= hour <= 20:
+        return "17:00–20:00"
+    return None
+
+
 def get_next_missing_field(lead: dict):
     ensure_lead_structure(lead)
     if lead.get("status") == "STOPPED":
@@ -5179,9 +5209,7 @@ def get_next_missing_field(lead: dict):
     if age is not None and not 12 <= int(age) <= 18:
         return None
     callback_value = str(lead.get("preferred_call_time") or "")
-    callback_slot_complete = bool(
-        re.search(r"(?:10:00\D*13:00|13:00\D*17:00|17:00\D*20:00)", callback_value)
-    )
+    callback_slot_complete = normalize_callback_slot(callback_value) is not None
     for field, value in (
         ("child_age", child.get("age")),
         ("main_concern", child.get("main_concern")),
@@ -5216,7 +5244,7 @@ def get_next_question(lead: dict) -> str:
                 "saxlayacaq. Əlaqə nömrənizi qeyd edə bilərsiniz?\n\n"
                 "Zəng müddəti təxminən 10 dəqiqədir.")
     if field == "preferred_call_time":
-        return ("Sizinlə əlaqə saxlamaq üçün hansı vaxt daha uyğundur?\n\n"
+        return ("Sizinlə sabah əlaqə saxlamaq üçün hansı vaxt daha uyğundur?\n\n"
                 "10:00–13:00\n13:00–17:00\n17:00–20:00")
     return ""
 
@@ -5283,7 +5311,7 @@ def should_finalize_lead(lead: dict) -> bool:
 
 
 def build_final_message(lead: dict) -> str:
-    return f"Təşəkkürlər. Sizinlə {lead.get('preferred_call_time')} aralığında əlaqə saxlanılacaq."
+    return f"Təşəkkürlər. Sizinlə sabah {lead.get('preferred_call_time')} aralığında əlaqə saxlanılacaq."
 
 
 def finalize_lead(lead: dict) -> str:
