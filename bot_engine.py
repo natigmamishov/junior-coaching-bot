@@ -83,7 +83,7 @@ if OPENAI_API_KEY:
 
     http_client = httpx.Client(
         verify=False,
-        timeout=60,
+        timeout=15,
     )
 
     client = OpenAI(
@@ -5334,6 +5334,170 @@ def finalize_lead(lead: dict) -> str:
 _TURN_ORCHESTRATOR = TurnOrchestrator()
 
 
+def _process_ai_first_turn(
+    user_text: str,
+    lead: dict,
+    faq_min_score: float = 0.18,
+    history: Optional[List[Dict[str, str]]] = None,
+) -> str:
+    """Understand first, then apply the deterministic lead-capture policy."""
+    text = str(user_text or "").strip()
+    ensure_lead_structure(lead)
+    history = history if history is not None else lead.setdefault("_history", [])
+    field_before = get_next_missing_field(lead)
+    normalized = normalize_for_search(text)
+    stop_phrases = (
+        "kifayet", "besdir", "dayandir", "dayanin", "stop", "istemirem",
+        "lazim deyil", "ehtiyac yoxdur", "davam etmek istemirem",
+        "sohbeti dayandir", "prosesi dayandir", "artiq yazmayin",
+    )
+    if normalized in stop_phrases or any(phrase in normalized for phrase in stop_phrases[6:]):
+        lead["status"] = "STOPPED"
+        lead["application_status"] = "stopped_by_user"
+        lead["pending_questions"] = []
+        lead["_last_asked_field"] = None
+        reply = "Əlbəttə. Təşəkkür edirik."
+        history.extend(({"role": "user", "content": text}, {"role": "assistant", "content": reply}))
+        del history[:-MAX_HISTORY_MESSAGES]
+        return reply
+
+    echoed_assistant_message = any(
+        item.get("role") == "assistant"
+        and normalize_for_search(item.get("content", "")) == normalized
+        for item in history[-4:]
+    )
+    if echoed_assistant_message:
+        reply = "Anladım."
+        history.extend((
+            {"role": "user", "content": text},
+            {"role": "assistant", "content": reply},
+        ))
+        del history[:-MAX_HISTORY_MESSAGES]
+        return reply
+
+    phone_assent = {
+        "beli", "he", "hee", "yes", "ok", "okay", "olar", "buyurun",
+        "elbet", "elbette", "elbetde",
+    }
+    if field_before == "phone" and normalized in phone_assent:
+        reply = "Əlaqə nömrənizi tam formada qeyd edə bilərsiniz?"
+        history.extend((
+            {"role": "user", "content": text},
+            {"role": "assistant", "content": reply},
+        ))
+        del history[:-MAX_HISTORY_MESSAGES]
+        return reply
+
+    if prefers_chat_only(text):
+        lead["phone_declined"] = True
+        lead["contact_requested"] = False
+        lead["status"] = "NEW"
+        lead["application_status"] = "in_progress"
+        skipped = lead.setdefault("_skipped_fields", [])
+        for skipped_field in ("phone", "preferred_call_time"):
+            if skipped_field not in skipped:
+                skipped.append(skipped_field)
+        reply = build_chat_continuation(lead)
+        history.extend((
+            {"role": "user", "content": text},
+            {"role": "assistant", "content": reply},
+        ))
+        del history[:-MAX_HISTORY_MESSAGES]
+        return reply
+
+    candidates = retrieve_faq_candidates(text, k=12, min_score=0.03)
+    analysis = verify_analysis(
+        analyze_message(user_text=text, lead=lead, history=history, faq_candidates=candidates),
+        user_text=text,
+    )
+    if field_before == "child_age" and not analysis.get("children"):
+        ages = extract_all_ages(text)
+        if ages:
+            analysis["children"] = [
+                {"name": "", "age": age, "main_concern": ""} for age in ages[:2]
+            ]
+            analysis["multiple_children"] = len(ages) > 1
+            analysis["children_count"] = len(ages[:2])
+
+    corrected = merge_extracted_information(lead, analysis, text)
+    update_conversation_state(lead, analysis)
+    intent = analysis.get("intent") or "field_answer"
+    lead["_last_intent"] = intent
+    lead["_last_confidence"] = analysis.get("confidence")
+    age = get_active_child(lead).get("age")
+
+    if age is not None and not 12 <= int(age) <= 18:
+        lead["status"] = "NOT_ELIGIBLE"
+        lead["application_status"] = "closed_not_eligible"
+        reply = "Xeyr, proqram 12–18 yaş aralığı üçündür."
+    elif is_clinical_boundary_question(text):
+        reply = _approved_faq_answer(text) or SIMPLIFIED_UNKNOWN_FAQ
+    elif intent == "safety_risk":
+        lead["status"] = "ESCALATED"
+        lead["handoff_status"] = "requested"
+        lead["owner"] = "human"
+        reply = (
+            "Bu vəziyyət peşəkar və təcili diqqət tələb edə bilər. Junior Coaching "
+            "təcili tibbi və psixoloji yardımı əvəz etmir; uyğun mütəxəssisə müraciət edin."
+        )
+    elif analysis.get("clarification_needed"):
+        reply = str(analysis.get("clarification_question") or "").strip()
+        reply = reply or "Düzgün anlamağım üçün bunu bir qədər dəqiqləşdirə bilərsiniz?"
+    elif intent == "human_agent_request" or analysis.get("handoff_required"):
+        lead["handoff_status"] = "requested"
+        lead["owner"] = "human"
+        reply = "Əlbəttə. Bu barədə məsul əməkdaşımız sizinlə əlaqə saxlayacaq."
+        if not lead.get("phone"):
+            reply += " Əlaqə nömrənizi qeyd edə bilərsiniz?"
+    elif intent == "state_question":
+        reply = answer_state_question(lead, analysis.get("state_question_type") or "summary")
+    elif intent == "pause_request":
+        reply = "Əlbəttə. İstədiyiniz zaman buradan davam edə bilərsiniz."
+    elif intent == "refusal" or is_strong_contact_refusal(text):
+        if field_before == "phone" and is_strong_contact_refusal(text):
+            lead["phone_declined"] = True
+            for skipped_field in ("phone", "preferred_call_time"):
+                if skipped_field not in lead.setdefault("_skipped_fields", []):
+                    lead["_skipped_fields"].append(skipped_field)
+            reply = build_chat_continuation(lead)
+        else:
+            reply = handle_refusal(lead, field_before)
+    elif analysis.get("questions") or analysis.get("is_question") or intent in (
+        "faq_question", "program_interest", "meta_question",
+    ):
+        reply = answer_user_question(
+            user_text=text, lead=lead, faq_min_score=faq_min_score, data=analysis,
+            faq_candidates=candidates, history=history,
+        )
+        if get_next_missing_field(lead) is not None:
+            reply = append_next_question(reply, lead, with_bridge=False)
+    else:
+        if field_before and field_before == get_next_missing_field(lead):
+            save_current_field_fallback(lead, field_before, text)
+        if should_finalize_lead(lead):
+            reply = finalize_lead(lead)
+        elif intent == "greeting":
+            opening = "Salam." if not history_has_greeting(history) else "Buyurun."
+            reply = append_next_question(opening, lead, with_bridge=False)
+        elif intent == "smalltalk":
+            reply = append_next_question("Təşəkkür edirəm.", lead, with_bridge=False)
+        elif get_next_missing_field(lead) is not None:
+            acknowledgement = build_correction_ack(corrected)
+            if not acknowledgement and field_before != get_next_missing_field(lead):
+                acknowledgement = build_field_ack(field_before, lead)
+            reply = append_next_question(
+                acknowledgement, lead, with_bridge=not bool(acknowledgement)
+            )
+        else:
+            reply = "Qeyd etdim. Başqa sualınız varsa, yaza bilərsiniz."
+
+    if not re.search(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", text):
+        reply = re.sub(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", "", str(reply))
+        reply = re.sub(r" {2,}", " ", reply).strip()
+    history.extend(({"role": "user", "content": text}, {"role": "assistant", "content": reply}))
+    del history[:-MAX_HISTORY_MESSAGES]
+    return reply
+
 def lead_agent_reply(
     user_text: str,
     lead: dict,
@@ -5359,7 +5523,7 @@ def lead_agent_reply(
         turn=turn,
         state=lead,
         history=history,
-        handler=_process_legacy_turn,
+        handler=_process_ai_first_turn,
         faq_min_score=faq_min_score,
     )
     return result.response
