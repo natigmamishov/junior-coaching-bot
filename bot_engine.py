@@ -5231,23 +5231,31 @@ def get_next_question(lead: dict) -> str:
     if field == "child_age":
         return "İlk olaraq, övladınızın yaşını qeyd edə bilərsiniz?"
     if field == "main_concern":
-        return ("Dəstək verilməsini istədiyiniz əsas məsələ nədir?\n\n"
-                "Məsələn: özünəinam, ünsiyyət və özünüifadə, məsuliyyət və intizam, "
-                "fokus, liderlik, gələcək və ixtisas seçimi və s.")
+        return (
+            "Ən çox hansı sahədə inkişaf etməsini istərdiniz?\n\n"
+            "Məsələn: özgüvən, məqsəd və gələcək, məsuliyyət və intizam, "
+            "ünsiyyət və s."
+        )
     if field == "parent_name":
-        return "Adınızı necə qeyd edə bilərəm?"
+        return (
+            "Təşəkkürlər!\n\n"
+            "Sabah qısa zəngdə övladınız üçün uyğun proqramı dəqiqləşdirib "
+            "qiymət və detalları paylaşacağıq.\n\n"
+            "Adınızı və telefon nömrənizi qeyd edin, zəhmət olmasa.\n\n"
+            "(Övladınızın zəngdə iştirakı vacib deyil.)"
+        )
     if field == "phone":
-        # get_parent_display_name artıq titulu əlavə edir; burada ikinci dəfə
-        # əlavə etmək "Tural bəy bəy" nəticəsi yaradırdı.
         salutation = f", {parent}" if parent else ""
-        return (f"Təşəkkür edirəm{salutation}. Sizinlə məlumat üçün əməkdaşımız əlaqə "
-                "saxlayacaq. Əlaqə nömrənizi qeyd edə bilərsiniz?\n\n"
-                "Zəng müddəti təxminən 10 dəqiqədir.")
+        return (
+            f"Təşəkkür edirəm{salutation}. Telefon nömrənizi də qeyd edin, "
+            "zəhmət olmasa."
+        )
     if field == "preferred_call_time":
-        return ("Sizinlə sabah əlaqə saxlamaq üçün hansı vaxt daha uyğundur?\n\n"
-                "10:00–13:00\n13:00–17:00\n17:00–20:00")
+        return (
+            "Sizinlə sabah əlaqə saxlamaq üçün hansı vaxt daha uyğundur?\n\n"
+            "10:00–13:00\n13:00–17:00\n17:00–20:00"
+        )
     return ""
-
 
 def is_clinical_boundary_question(user_text: str) -> bool:
     value = normalize_for_search(user_text)
@@ -5345,6 +5353,10 @@ def _process_ai_first_turn(
     ensure_lead_structure(lead)
     history = history if history is not None else lead.setdefault("_history", [])
     field_before = get_next_missing_field(lead)
+    was_completed = (
+        lead.get("status") == "CALL_REQUESTED"
+        or lead.get("application_status") == "completed"
+    )
     normalized = normalize_for_search(text)
     stop_phrases = (
         "kifayet", "besdir", "dayandir", "dayanin", "stop", "istemirem",
@@ -5420,6 +5432,9 @@ def _process_ai_first_turn(
             analysis["children_count"] = len(ages[:2])
 
     corrected = merge_extracted_information(lead, analysis, text)
+    completed_callback_slot = normalize_callback_slot(text) if was_completed else None
+    if completed_callback_slot:
+        lead["preferred_call_time"] = completed_callback_slot
     update_conversation_state(lead, analysis)
     intent = analysis.get("intent") or "field_answer"
     lead["_last_intent"] = intent
@@ -5471,6 +5486,16 @@ def _process_ai_first_turn(
         )
         if get_next_missing_field(lead) is not None:
             reply = append_next_question(reply, lead, with_bridge=False)
+    elif was_completed:
+        if completed_callback_slot:
+            reply = (
+                f"Qeyd etdim. Sizinlə sabah {completed_callback_slot} "
+                "aralığında əlaqə saxlanılacaq."
+            )
+        elif normalized in {"oldu", "tamam", "yaxsi", "cox sag olun", "tesekkurler"}:
+            reply = "Təşəkkür edirəm."
+        else:
+            reply = "Qeyd etdim. Başqa sualınız varsa, yaza bilərsiniz."
     else:
         if field_before and field_before == get_next_missing_field(lead):
             save_current_field_fallback(lead, field_before, text)

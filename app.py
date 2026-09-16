@@ -28,11 +28,10 @@ st.set_page_config(
 # =========================================================
 
 WELCOME_MESSAGE = (
-    "Salam,\n\n"
-    "Övladınıza uyğun proqramı öyrənmək üçün sizə 2 qısa sualımız var.\n\n"
-    "İlk olaraq, yaşını qeyd edə bilərsiniz?"
+    "Salam, dəyərli valideyn!\n\n"
+    "Övladınıza uyğun proqramı seçmək üçün sizə 2 qısa sualımız var.\n\n"
+    "İlk olaraq, övladınızın yaşını qeyd edə bilərsiniz?"
 )
-
 
 # =========================================================
 # SESSION INITIALIZATION
@@ -660,7 +659,7 @@ def flush_need_batch():
         and bot.get_next_missing_field(st.session_state.lead) == "parent_name"
     ):
         question = bot.get_next_question(st.session_state.lead)
-        prompt = f"Anladım, qeyd etdim.\n\n{question}" if question else ""
+        prompt = question or ""
         last = st.session_state.messages[-1] if st.session_state.messages else {}
         if prompt and not (
             last.get("role") == "assistant"
@@ -672,7 +671,8 @@ def flush_need_batch():
     st.rerun()
 
 
-flush_need_batch()
+if st.session_state.need_batch_active:
+    flush_need_batch()
 
 
 # =========================================================
@@ -869,6 +869,10 @@ if True:  # A completed application does not close the conversation.
                     st.markdown(
                         bot_response
                     )
+
+            else:
+                # Mount the debounce fragment after this run activated it.
+                st.rerun()
 
 
             # ---------------------------------------------

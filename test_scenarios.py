@@ -1255,6 +1255,13 @@ def test_consultative_discovery_order():
         repr(lead),
     )
 
+    need_copy = bot.get_next_question(lead)
+    check(
+        "new need question copy is active",
+        "Ən çox hansı sahədə inkişaf etməsini istərdiniz?" in need_copy
+        and "özgüvən" in need_copy,
+        repr(need_copy),
+    )
     child["main_concern"] = "ünsiyyət və özünüifadə"
     bot.sync_flat_fields(lead)
     check(
@@ -1263,6 +1270,13 @@ def test_consultative_discovery_order():
         repr(lead),
     )
 
+    contact_copy = bot.get_next_question(lead)
+    check(
+        "name and phone are requested in one contact prompt",
+        "Adınızı və telefon nömrənizi" in contact_copy
+        and "Övladınızın zəngdə iştirakı vacib deyil" in contact_copy,
+        repr(contact_copy),
+    )
     lead["parent_name"] = "Aysel"
     check(
         "uşaq adı tələb olunmadan telefon gəlir",
@@ -1378,6 +1392,33 @@ def test_consultative_discovery_order():
         repr(echo_reply),
     )
 
+    completed_lead = bot.create_empty_lead("TEST")
+    completed_lead["children"][0].update(age=14, main_concern="fokus")
+    completed_lead["parent_name"] = "Aysel"
+    completed_lead["phone"] = "0556666666"
+    completed_lead["preferred_call_time"] = "13:00–17:00"
+    bot.finalize_lead(completed_lead)
+    original_client = bot.client
+    try:
+        bot.client = None
+        completed_ack = bot.lead_agent_reply("oldu", completed_lead, history=[])
+        completed_time = bot.lead_agent_reply(
+            "14:00 olsa yaxşı olar", completed_lead, history=[]
+        )
+    finally:
+        bot.client = original_client
+    check(
+        "completed lead does not repeat final response for acknowledgement",
+        completed_ack == "Təşəkkür edirəm."
+        and "əlaqə saxlanılacaq" not in completed_ack,
+        repr(completed_ack),
+    )
+    check(
+        "completed lead accepts callback time refinement once",
+        completed_lead["preferred_call_time"] == "13:00–17:00"
+        and completed_time.startswith("Qeyd etdim."),
+        repr((completed_time, completed_lead["preferred_call_time"])),
+    )
     unknown = bot.generate_contextual_kb_answer("Nahar verilir?", lead)
     check(
         "FAQ-dan kənar sual standart əməkdaş cavabına gedir",
