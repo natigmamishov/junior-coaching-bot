@@ -4870,7 +4870,7 @@ def _process_legacy_turn(
     elif age_not_eligible:
         lead["status"] = "NOT_ELIGIBLE"
         lead["application_status"] = "closed_not_eligible"
-        reply = "Xeyr, proqram 12–18 yaş aralığı üçündür."
+        reply = "Proqram 12–18 yaş aralığı üçündür."
 
     elif self_contact_preference:
         reply = (
@@ -5444,7 +5444,7 @@ def _process_ai_first_turn(
     if age is not None and not 12 <= int(age) <= 18:
         lead["status"] = "NOT_ELIGIBLE"
         lead["application_status"] = "closed_not_eligible"
-        reply = "Xeyr, proqram 12–18 yaş aralığı üçündür."
+        reply = "Proqram 12–18 yaş aralığı üçündür."
     elif is_clinical_boundary_question(text):
         reply = _approved_faq_answer(text) or SIMPLIFIED_UNKNOWN_FAQ
     elif intent == "safety_risk":
